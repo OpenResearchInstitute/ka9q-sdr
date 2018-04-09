@@ -1,0 +1,82 @@
+# $Id: Makefile.osx,v 1.34 2018/02/26 22:50:47 karn Exp $
+#CC=g++
+GCC=g++
+#COPTS=-g -O2 -std=gnu11 -pthread -Wall -funsafe-math-optimizations
+CFLAGS=-g -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
+BINDIR=/usr/local/bin
+LIBDIR=/usr/local/share/ka9q-radio
+LD_FLAGS=-lpthread -lm
+EXECS=aprs iqplay iqrecord modulate monitor opus opussend packet pcmcat radio
+AFILES=bandplan.txt help.txt modes.txt
+
+all: $(EXECS) $(AFILES)
+
+install: all
+	install -d $(LIBDIR)
+	install -d $(BINDIR)
+	install -o root -m 04755 $(EXECS) $(BINDIR)
+	install $(AFILES) $(LIBDIR)
+
+clean:
+	rm -f *.o *.a $(EXECS) $(AFILES)
+	rcsclean
+
+aprs: aprs.o ax25.o multicast.o misc.o
+	$(CC) -g -o $@ $^ $(LD_FLAGS)
+
+packet: packet.o filter.o filter.o misc.o multicast.o ax25.o
+	$(CC) -g -o $@ $^ `pkg-config --libs fftw3f` $(LD_FLAGS)
+
+pcmcat: pcmcat.o multicast.o
+	$(CC) -g -o $@ $^ $(LD_FLAGS)
+
+opus: opus.o multicast.o
+	$(CC) -g -o $@ $^ `pkg-config --libs opus` $(LD_FLAGS)
+
+opussend: opussend.o multicast.o
+	$(CC) -g -o $@ $^ `pkg-config --libs opus portaudio-2.0` $(LD_FLAGS)
+
+iqplay: iqplay.o multicast.o attr.o misc.o
+	$(CC) -g -o $@ $^ $(LD_FLAGS)
+
+iqrecord: iqrecord.o multicast.o attr.o
+	$(CC) -g -o $@ $^ $(LD_FLAGS)
+
+modulate: modulate.o misc.o filter.o
+	$(CC) -g -o $@ $^ -lfftw3f_threads `pkg-config --libs fftw3f` $(LD_FLAGS)
+
+monitor: monitor.o multicast.o
+	$(CC) -g -o $@ $^ `pkg-config --libs ncurses portaudio-2.0 opus` $(LD_FLAGS)
+
+# pkg-config doesn't seem to find -lfftw3f_threads so we list it explicitly
+radio: main.o radio.o fm.o linear.o am.o filter.o display.o doppler.o modes.o audio.o multicast.o bandplan.o misc.o
+	$(CC) -g -o $@ $^ -lfftw3f_threads `pkg-config --libs ncurses fftw3f` $(LD_FLAGS)
+
+am.o: misc.h filter.h radio.h audio.h
+aprs.o: aprs.c ax25.h multicast.h misc.h
+attr.o: attr.c attr.h
+audio.o: audio.c misc.h audio.h multicast.h
+ax25.o: ax25.c ax25.h
+bandplan.o: bandplan.c bandplan.h
+display.o: display.c radio.h audio.h misc.h filter.h bandplan.h multicast.h
+doppler.o: doppler.c radio.h misc.h
+fcd.o: fcd.c fcd.h hidapi.h fcdhidcmd.h
+filter.o: filter.c misc.h filter.h
+fm.o: fm.c misc.h filter.h radio.h audio.h
+iqplay.o: iqplay.c misc.h radio.h multicast.h attr.h
+iqrecord.o: iqrecord.c radio.h multicast.h attr.h
+linear.o: linear.c misc.h filter.h radio.h audio.h
+main.o: main.c radio.h filter.h misc.h audio.h multicast.h
+misc.o: misc.c radio.h
+modes.o: modes.c radio.h misc.h
+modulate.o: modulate.c misc.h filter.h radio.h
+monitor.o: monitor.c misc.h multicast.h
+multicast.o: multicast.c multicast.h
+opus.o: opus.c misc.h multicast.h
+opussend.o: opussend.c misc.h multicast.h
+packet.o: packet.c filter.h misc.h multicast.h ax25.h
+pcmcat.o: pcmcat.c multicast.h
+radio.o: radio.c radio.h filter.h misc.h audio.h audio.h
+
+
+
