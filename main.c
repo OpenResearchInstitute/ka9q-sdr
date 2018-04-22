@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.108 2018/04/22 08:55:50 karn Exp $
+// $Id: main.c,v 1.109 2018/04/22 22:19:42 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -65,6 +65,14 @@ void closedown(int a){
 }
 
 
+// The main program sets up the demodulator parameter defaults,
+// overwrites them with command-line arguments and/or state file settings,
+// initializes the various local oscillators, pthread mutexes and conditions
+// sets up multicast I/Q input and PCM audio output
+// Sets up the input half of the pre-detection filter
+// starts the RTP input and downconverter/filter threads
+// sets the initial demodulation mode, which starts the demodulator thread
+// catches signals and eventually becomes the user interface/display loop
 int main(int argc,char *argv[]){
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
@@ -273,7 +281,7 @@ int main(int argc,char *argv[]){
 }
 
 
-// Read from RTP network socket, remove DC offsets,
+// Thread to read from RTP network socket, remove DC offsets,
 // fix I/Q gain and phase imbalance,
 // Write corrected data to circular buffer, wake up demodulator thread(s)
 // when data is available and when SDR status (frequency, sampling rate) changes

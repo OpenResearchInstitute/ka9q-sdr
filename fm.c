@@ -1,5 +1,6 @@
-// $Id: fm.c,v 1.50 2018/04/04 01:38:50 karn Exp $
+// $Id: fm.c,v 1.52 2018/04/22 22:51:55 karn Exp $
 // FM demodulation and squelch
+// Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <limits.h>
@@ -16,8 +17,9 @@
 #include "radio.h"
 #include "audio.h"
 
-void *pltask(void *);
+void *pltask(void *); // Measure PL tone frequency
 
+// FM demodulator thread
 void *demod_fm(void *arg){
   pthread_setname("fm");
   assert(arg != NULL);
@@ -36,7 +38,8 @@ void *demod_fm(void *arg){
   demod->filter_out = filter;
   set_filter(filter,dsamprate,demod->low,demod->high,demod->kaiser_beta);
 
-  // Set up audio baseband filter
+  // Set up audio baseband filter master
+  // Can have two slave filters: one for the de-emphasized audio output, another for the PL tone measurement
   int const AL = demod->L / demod->decimate;
   int const AM = (demod->M - 1) / demod->decimate + 1;
   int const AN = AL + AM - 1;
@@ -45,7 +48,7 @@ void *demod_fm(void *arg){
 
   demod->audio_master = audio_master;
 
-  // Low pass filter to isolate PL tone at low sample rate
+  // Thread running 10-second FFT at low sample rate to measure PL tone frequency
   pthread_t pl_thread;
   pthread_create(&pl_thread,NULL,pltask,demod);
 
@@ -86,7 +89,7 @@ void *demod_fm(void *arg){
     // We do this in the loop because BW can change
     float const gain = (demod->headroom *  M_1_PI * dsamprate) / fabsf(demod->low - demod->high);
 
-    // Find average amplitude
+    // Find average amplitude and estimate SNR for squelch
     // We also need average magnitude^2, but we have that from demod->bb_power
     // Approximate for SNR because magnitude has a chi-squared distribution with 2 degrees of freedom
     float avg_amp = 0;
@@ -100,35 +103,35 @@ void *demod_fm(void *arg){
     avg_amp /= filter->olen;         // Average magnitude
     float const fm_variance = demod->bb_power - avg_amp*avg_amp;
     demod->snr = avg_amp*avg_amp/(2*fm_variance) - 1;
-    if(demod->snr < 0)
-      demod->snr = 0; // Force to -infinity dB
+    demod->snr = max(0.0f,demod->snr); // Smoothed values can be a little inconsistent
 
+    // Demodulated FM samples
     float samples[audio_master->ilen];
-    // Let the filter tail leave after the squelch is closed, but don't send pure silence
-
-    if(demod->snr > 2) {
+    // Start timer when SNR falls below threshold
+    if(demod->snr > 2) { // +3dB? +6dB?
       snr_below_threshold = 0;
     } else {
       if(++snr_below_threshold > 1000)
 	snr_below_threshold = 1000; // Could conceivably wrap if squelch is closed for long time
     }
-    if(snr_below_threshold < 2){ // keep the squelch open a little longer to make sure we don't chop something off
+    if(snr_below_threshold < 2){ // Squelch is (still) open
+      // keep the squelch open an extra block to flush out the filters and buffers
+
       // Threshold extension by comparing sample amplitude to threshold
       // 0.55 is empirical constant, 0.5 to 0.6 seems to sound good
       // Square amplitudes are compared to avoid sqrt inside loop
-
       float const min_ampl = 0.55 * 0.55 * avg_amp * avg_amp;
 
-      // Actual FM demodulation, with impulse noise blanking
+      // Actual FM demodulation
       float pdev_pos = 0;
       float pdev_neg = 0;
       float avg_f = 0;
       for(int n=0; n<filter->olen; n++){
 	complex float const samp = filter->output.c[n];
-	if(cnrmf(samp) > min_ampl){
-	  lastaudio = samples[n] = audio_master->input.r[n] = cargf(samp * state);
+	if(cnrmf(samp) > min_ampl){ // Blank weak samples
+	  lastaudio = samples[n] = audio_master->input.r[n] = cargf(samp * state); // Phase change from last sample
 	  state = conjf(samp);
-	  // Keep track of peak deviation only if signal is present
+	  // Track of peak deviation only if signal is present
 	  if(n == 0)
 	    pdev_pos = pdev_neg = lastaudio;
 	  else if(lastaudio > pdev_pos)
@@ -140,30 +143,31 @@ void *demod_fm(void *arg){
 	}
 	avg_f += lastaudio;
       }
-      avg_f /= filter->olen;  // freq offset
+      avg_f /= filter->olen;  // Average FM output is freq offset
       if(snr_below_threshold < 1){
+	// Squelch open; update frequency offset and peak deviation
 	demod->foffset = dsamprate  * avg_f * M_1_2PI;
 
-	// Find peak deviation allowing for frequency offset, scale for output
+	// Remove frequency offset from deviation peaks and scale
 	pdev_pos -= avg_f;
 	pdev_neg -= avg_f;
 	demod->pdeviation = dsamprate * max(pdev_pos,-pdev_neg) * M_1_2PI;
       }
     } else {
-      // Squelch is closed
+      // Squelch is closed, send zeroes for a little while longer
       memset(samples,0,audio_master->ilen * sizeof(*samples));
       memset(audio_master->input.r,0,audio_master->ilen*sizeof(*audio_master->input.r));
     }
-    execute_filter_input(audio_master);
+    execute_filter_input(audio_master); // Pass to post-detection audio filter(s)
 
     if(audio_filter != NULL){
       execute_filter_output(audio_filter);
 
       // in FM flat mode there is no audio filter, and audio is already in samples[]
       assert(audio_master->ilen == audio_filter->olen);
-      for(int n=0; n < audio_filter->olen; n++){
+      for(int n=0; n < audio_filter->olen; n++)
 	samples[n] = audio_filter->output.r[n] * gain;
-      }
+
     }
     send_mono_audio(audio,samples,audio_master->ilen);
   }
@@ -186,7 +190,7 @@ void *demod_fm(void *arg){
   pthread_exit(NULL);
 }
 
-// pltask
+// pltask to measure PL tone frequency with FFT
 void *pltask(void *arg){
   pthread_setname("pl");
   struct demod *demod = (struct demod *)arg;
@@ -205,6 +209,7 @@ void *pltask(void *arg){
   int const PL_L = AL / PL_decimate;
   int const PL_M = PL_N - PL_L + 1;
 
+  // Low pass filter with 300 Hz cut to pass only PL tones
   complex float * const plresponse = fftwf_alloc_complex(PL_N/2+1);
   assert(plresponse != NULL);
   float const filter_gain = 1;
@@ -267,7 +272,7 @@ void *pltask(void *arg){
       }
       // Standard PL tones range from 67.0 to 254.1 Hz; ignore out of range results
       // as they can be falsed by voice in the absence of a tone
-      // Give a result only if the energy in the tone exceeds a threshold
+      // Give a result only if the energy in the tone exceeds an arbitrary fraction of the total
       if(peakbin > 0 && peakenergy > 0.01 * totenergy){
 	float const f = (float)peakbin * PL_samprate / pl_fft_size;
 	if(f > 67 && f < 255)

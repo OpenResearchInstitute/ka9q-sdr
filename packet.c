@@ -1,5 +1,8 @@
-// $Id: packet.c,v 1.11 2018/04/09 21:23:57 karn Exp $
+// $Id: packet.c,v 1.12 2018/04/22 22:41:09 karn Exp $
 // AFSK/FM packet demodulator
+// Reads RTP PCM audio stream, emits decoded frames in multicast UDP
+// Output framea don't have RTP headers, but they should
+// Copyright 2018, Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
 #include <assert.h>
@@ -20,6 +23,7 @@
 #include "multicast.h"
 #include "ax25.h"
 
+// Needs to be redone with common RTP receiver module
 struct packet {
   struct packet *prev;       // Linked list pointers
   struct packet *next; 

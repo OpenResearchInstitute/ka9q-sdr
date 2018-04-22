@@ -1,5 +1,6 @@
-// $Id: doppler.c,v 1.6 2018/02/06 11:46:18 karn Exp $
+// $Id: doppler.c,v 1.7 2018/04/22 21:11:01 karn Exp $
 // Real-time doppler steering
+// Copyright 2018, Phil Karn KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <unistd.h>
@@ -22,6 +23,9 @@
 #include "radio.h"
 
 
+// Thread invoked by -d command line option to 'radio'
+// Spawns specified command, extracts velocity and acceleration from its output
+// Computes frequency and frequency rate and calls doppler set functions
 void *doppler(void *arg){
   pthread_setname("doppler");
   if(arg == NULL)

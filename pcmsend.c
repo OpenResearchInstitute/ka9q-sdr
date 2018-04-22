@@ -1,5 +1,5 @@
-// $Id#
-// Multicast local audio with PCM
+// $Id: pcmsend.c,v 1.4 2018/04/22 18:12:56 karn Exp $
+// Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
@@ -33,8 +33,6 @@ int Verbose;                  // Verbosity flag (currently unused)
 
 int const Channels = 2;
 #define FRAMESIZE 240         // 5 ms @ 48 kHz makes 960 bytes/packet
-
-
 // End of config stuff
 
 int Output_fd = -1;
@@ -260,7 +258,7 @@ int main(int argc,char * const argv[]){
 }
 
 // Portaudio callback - encode and transmit audio
-// You're supposed to avoid synchronization calls here, but they seem to work
+// You're supposed to avoid synchronization calls here, which is very hard
 static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       unsigned long framesPerBuffer,
 		       const PaStreamCallbackTimeInfo* timeInfo,

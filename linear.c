@@ -1,8 +1,8 @@
-// $Id: linear.c,v 1.19 2018/02/26 08:51:19 karn Exp $
+// $Id: linear.c,v 1.20 2018/04/22 22:13:15 karn Exp $
 
-// General purpose linear modes demodulator
-// Derived from dsb.c by folding in ISB and making coherent tracking optional
-// Sept 20 2017 Phil Karn, KA9Q
+// General purpose linear demodulator
+// Handles USB/IQ/CW/etc, basically all modes but FM and envelope-detected AM
+// Copyright Sept 20 2017 Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
 #include <complex.h>
@@ -14,7 +14,6 @@
 #include <limits.h>
 #include <pthread.h>
 #include <string.h>
-
 
 #include "misc.h"
 #include "filter.h"
@@ -113,7 +112,7 @@ void *demod_linear(void *arg){
 
   while(!demod->terminate){
     // New samples
-    // Copy ISB flag to filter
+    // Copy ISB flag to filter, since it might change
     if(demod->flags & ISB)
       filter->out_type = CROSS_CONJ;
     else
@@ -127,15 +126,20 @@ void *demod_linear(void *arg){
 
     // Carrier (or regenerated carrier) tracking in coherent mode
     if(demod->flags & PLL){
-      // Copy into circular input buffer for FFT in case we need it
+      // Copy into circular input buffer for FFT in case we need it for acquisition
       if(fft_enable){
 	if(demod->flags & SQUARE){
+	  // Squaring loop is enabled; square samples to strip BPSK or DSB modulation
+	  // and form a carrier component at 2x its actual frequency
+	  // This is of course suboptimal for BPSK since there's no matched filter,
+	  // but it may be useful in a pinch
 	  for(int i=0;i<filter->olen;i++){
 	    fftinbuf[fft_ptr++] = filter->output.c[i] * filter->output.c[i];
 	    if(fft_ptr >= fftsize)
 	      fft_ptr -= fftsize;
 	  }
 	} else {
+	  // No squaring, just analyze the samples directly for a carrier
 	  for(int i=0;i<filter->olen;i++){
 	    fftinbuf[fft_ptr++] = filter->output.c[i];
 	    if(fft_ptr >= fftsize)
@@ -143,7 +147,9 @@ void *demod_linear(void *arg){
 	  }
 	}
       }
-      // Lock detector with hysteresis
+      // Loop lock detector with hysteresis
+      // If the loop is locked, the SNR must fall below the threshold for a while
+      // before we declare it unlocked, and vice versa
       if(demod->snr < snrthresh){
 	lock_count -= filter->olen;
       } else {
@@ -159,7 +165,7 @@ void *demod_linear(void *arg){
       }
       demod->spare = lock_count;
 
-      // If loop is out of lock, acquire
+      // If loop is out of lock, reacquire
       if(!pll_lock){
 	if(fft_enable){
 	  // Run FFT, look for peak bin
@@ -178,7 +184,7 @@ void *demod_linear(void *arg){
 	  }
 	  double new_delta_f = binsize * maxbin;
 	  if(demod->flags & SQUARE)
-	    new_delta_f /= 2; // Squaring loop provides 2x frequency
+	    new_delta_f /= 2; // Squaring loop provides 2xf component, so we must divide by 2
 	  
 	  if(new_delta_f != delta_f){
 	    delta_f = new_delta_f;
@@ -204,16 +210,17 @@ void *demod_linear(void *arg){
 	
 	accum += ss;
       }
-      // Renormalize
+      // Renormalize complex phasors
       fine_phasor /= cabs(fine_phasor);
       coarse_phasor /= cabs(coarse_phasor);
 
+      demod->cphase = cargf(accum);
       if(demod->flags & SQUARE)
-	demod->cphase = cargf(accum)/2;
-      else
-	demod->cphase = cargf(accum);
+	demod->cphase /= 2; // Squaring doubles the phase
+
 
       // fine PLL on block basis
+      // Includes ramp generator for frequency sweeping during acquisition
       float carrier_phase = demod->cphase;
 
       // Lag-lead (integral plus proportional) 
@@ -234,100 +241,76 @@ void *demod_linear(void *arg){
 	// In calibrate mode, keep highly smoothed estimate of frequency offset
 	// Apply this to calibration estimate below
 	calibrate_offset += .01 * (feedback + delta_f - calibrate_offset);
+	// apply and clear the current measured offset
+	set_cal(demod,demod->calibrate - calibrate_offset/get_freq(demod));
+	calibrate_offset = 0;
+	savecal(demod);
       }
-      if(isnan(demod->foffset)){
+      if(isnan(demod->foffset))
 	demod->foffset = feedback + delta_f;
-      } else {
+      else
 	demod->foffset += 0.1 * (feedback + delta_f - demod->foffset);
-      }
     } else {
-      // Not used in non-coherent modes
+      // Not used in non-coherent (i.e., non-PLL) modes
       demod->cphase = NAN;
       demod->foffset = NAN;
       demod->spare = NAN;
     }
-    if((demod->flags & CAL) && pll_lock){
-      // In calibrate mode, apply and clear the current measured offset
-      set_cal(demod,demod->calibrate - calibrate_offset/get_freq(demod));
-      calibrate_offset = 0;
-      savecal(demod);
-    }
-
     // Demodulation
     float signal = 0;
     float noise = 0;
-#if 0 // Now a separate demodulator
-    if(demod->flags & ENVELOPE){
-      // Envelope detected AM
-      float samples[filter->olen];
-      for(int n=0; n<filter->olen; n++){
-	float const sampsq = cnrmf(filter->output.c[n]);
-	signal += sampsq;
-	float const samp = sqrtf(sampsq);
-
-	// Remove carrier DC, use for AGC
-	// DC_filter will always be positive since sqrtf() is positive
-	DC_filter += DC_filter_coeff * (samp - crealf(DC_filter));
-	if(isnan(demod->gain)){
-	  demod->gain = demod->headroom / crealf(DC_filter);
-	} else if(demod->gain * crealf(DC_filter) > demod->headroom){
-	  //	  demod->gain *= attack_factor;
-	  demod->gain = demod->headroom / crealf(DC_filter);
-	  hangcount = hangmax;
-	} else if(hangcount != 0){
-	  hangcount--;
-	} else {
-	  demod->gain *= recovery_factor;
-	}
-	samples[n] = (samp - crealf(DC_filter)) * demod->gain;
-      }
-      send_mono_audio(audio,samples,filter->olen);
-    } else
-#endif
-      {
-      // All other linear modes besides envelope detection
-      for(int n=0; n<filter->olen; n++){
-	signal += crealf(filter->output.c[n]) * crealf(filter->output.c[n]);
-	noise += cimagf(filter->output.c[n]) * cimagf(filter->output.c[n]);
-	float amplitude = cabsf(filter->output.c[n]);
-	
-	// AGC
-	if(isnan(demod->gain)){
-	  demod->gain = demod->headroom / amplitude; // Startup
-	} else if(amplitude * demod->gain > demod->headroom){
-	  demod->gain = demod->headroom / amplitude;
-	  //	  demod->gain *= attack_factor;
-	  hangcount = hangmax;
-	} else if(hangcount != 0){
-	  hangcount--;
-	} else {
-	  demod->gain *= recovery_factor;
-	}
-	filter->output.c[n] *= demod->gain;
-      }
-      // Manual frequency shift *after* demodulation and AGC
-      pthread_mutex_lock(&demod->shift_mutex);
-      if(demod->shift != 0){
-	for(int n=0; n < filter->olen; n++){
-	  filter->output.c[n] *= demod->shift_phasor;
-	  demod->shift_phasor *= demod->shift_phasor_step;
-	}
-	demod->shift_phasor /= cabs(demod->shift_phasor);
-      }
-      pthread_mutex_unlock(&demod->shift_mutex);
-
-      if(demod->flags & MONO) {
-	// Send only I channel as mono
-	float samples[filter->olen];
-	for(int n=0; n<filter->olen; n++)
-	  samples[n] = crealf(filter->output.c[n]);
-	send_mono_audio(audio,samples,filter->olen);
+    
+    for(int n=0; n<filter->olen; n++){
+      // Assume signal on I channel, so only noise on Q channel
+      // True only in coherent modes when locked, but we'll need total power anyway
+      signal += crealf(filter->output.c[n]) * crealf(filter->output.c[n]);
+      noise += cimagf(filter->output.c[n]) * cimagf(filter->output.c[n]);
+      float amplitude = cabsf(filter->output.c[n]);
+      
+      // AGC
+      // Lots of people seem to have strong opinions how AGCs should work
+      // so there's probably a lot of work to do here
+      // The attack_factor feature doesn't seem to work well; if it's at all
+      // slow you get an annoying "pumping" effect.
+      // But if it's too fast, brief spikes can deafen you for some time
+      // What to do?
+      if(isnan(demod->gain)){
+	demod->gain = demod->headroom / amplitude; // Startup
+      } else if(amplitude * demod->gain > demod->headroom){
+	demod->gain = demod->headroom / amplitude;
+	//	  demod->gain *= attack_factor;
+	hangcount = hangmax;
+      } else if(hangcount != 0){
+	hangcount--;
       } else {
-	send_stereo_audio(audio,(float *)filter->output.c,filter->olen);
+	demod->gain *= recovery_factor;
       }
-    } // not envelope detection
+      filter->output.c[n] *= demod->gain;
+    }
+    // Optional frequency shift *after* demodulation and AGC
+    pthread_mutex_lock(&demod->shift_mutex);
+    if(demod->shift != 0){
+      for(int n=0; n < filter->olen; n++){
+	filter->output.c[n] *= demod->shift_phasor;
+	demod->shift_phasor *= demod->shift_phasor_step;
+      }
+      demod->shift_phasor /= cabs(demod->shift_phasor);
+    }
+    pthread_mutex_unlock(&demod->shift_mutex);
+    
+    if(demod->flags & MONO) {
+      // Send only I channel as mono
+      float samples[filter->olen];
+      for(int n=0; n<filter->olen; n++)
+	samples[n] = crealf(filter->output.c[n]);
+      send_mono_audio(audio,samples,filter->olen);
+    } else {
+      // I on left, Q on right
+      send_stereo_audio(audio,(float *)filter->output.c,filter->olen);
+    }
+    // Total baseband power (I+Q)
     demod->bb_power = (signal + noise) / filter->olen;
-    // PLL loop SNR
+    // PLL loop SNR, if used
     if(noise != 0 && (demod->flags & PLL)){
       demod->snr = (signal / noise) - 1; // S/N as power ratio; meaningful only in coherent modes
       if(demod->snr < 0)

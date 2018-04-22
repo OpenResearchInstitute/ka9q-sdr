@@ -1,5 +1,7 @@
-// $Id: aprs.c,v 1.5 2018/02/26 22:50:47 karn Exp $
+// $Id: aprs.c,v 1.6 2018/04/22 21:08:02 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
+// INCOMPLETE, doesn't yet drive antenna rotors
+// Copyright 2018, Phil Karn, KA9Q
 
 
 #define _GNU_SOURCE 1

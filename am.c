@@ -1,8 +1,6 @@
-// $Id: am.c,v 1.31 2018/02/06 11:45:27 karn Exp $
-
-// New AM demodulator, stripped from linear.c
-// Oct 9 2017 Phil Karn, KA9Q
-
+// $Id: am.c,v 1.32 2018/04/22 18:18:02 karn Exp $
+// AM envelope demodulator thread for 'radio'
+// Copyright Oct 9 2017, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <complex.h>
 #include <math.h>
@@ -13,12 +11,10 @@
 #include <pthread.h>
 #include <string.h>
 
-
 #include "misc.h"
 #include "filter.h"
 #include "radio.h"
 #include "audio.h"
-
 
 void *demod_am(void *arg){
   pthread_setname("am");
@@ -30,6 +26,8 @@ void *demod_am(void *arg){
   float const samptime = demod->decimate / demod->samprate;  // Time between (decimated) samples
 
   // AGC
+  // I originally just kept the carrier at constant amplitude
+  // but this fails when selective fading takes out the carrier, resulting in loud, distorted audio
   int hangcount = 0;
   float const recovery_factor = dB2voltage(demod->recovery_rate * samptime); // AGC ramp-up rate/sample
   //  float const attack_factor = dB2voltage(demod->attack_rate * samptime);      // AGC ramp-down rate/sample
@@ -54,21 +52,20 @@ void *demod_am(void *arg){
     // New samples
     execute_filter_output(filter);    
     if(!isnan(demod->n0))
-      demod->n0 += .001 * (compute_n0(demod) - demod->n0);
+      demod->n0 += .001 * (compute_n0(demod) - demod->n0); // Update noise estimate
     else
       demod->n0 = compute_n0(demod); // Happens at startup
 
-    // Demodulation
+    // AM envelope detector
     float signal = 0;
     float noise = 0;
-    // Envelope detected AM
     float samples[filter->olen];
     for(int n=0; n<filter->olen; n++){
       float const sampsq = cnrmf(filter->output.c[n]);
       signal += sampsq;
       float samp = sqrtf(sampsq);
       
-      // Remove carrier DC, use for AGC
+      // Remove carrier DC from audio
       // DC_filter will always be positive since sqrtf() is positive
       DC_filter += DC_filter_coeff * (samp - DC_filter);
       

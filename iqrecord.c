@@ -1,6 +1,7 @@
-// $Id: iqrecord.c,v 1.14 2018/04/16 22:04:36 karn Exp $
+// $Id: iqrecord.c,v 1.15 2018/04/22 21:49:57 karn Exp $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
+// Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <limits.h>
@@ -32,9 +33,15 @@
 #include "attr.h"
 #include "multicast.h"
 
-// Largest Ethernet packet size
-#define MAXPKT 1500
+// Largest Ethernet packet
+// Normally this would be <1500,
+// but what about Ethernet interfaces that can reassemble fragments?
+// 65536 should be safe since that's the largest IPv4 datagram.
+// But what about IPv6?
+#define MAXPKT 65535
 
+// size of stdio buffer for disk I/O
+// This should be large to minimize write calls, but how big?
 #define BUFFERSIZE (1<<20)
 
 // One for each session being recorded

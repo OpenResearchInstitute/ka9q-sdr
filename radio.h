@@ -1,4 +1,9 @@
-// $Id: radio.h,v 1.64 2018/04/20 06:19:07 karn Exp $
+// $Id: radio.h,v 1.65 2018/04/22 18:05:02 karn Exp $
+// Internal structures and functions of the 'radio' program
+// Nearly all internal state is in the 'demod' structure
+// More than one can exist in the same program,
+// but so far it seems easier to just run separate instances of the 'radio' program.
+// Copyright 2018, Phil Karn, KA9Q
 #ifndef _RADIO_H
 #define _RADIO_H 1
 
@@ -13,6 +18,8 @@
 
 #include "sdr.h"
 #include "multicast.h"
+
+// Internal format of entries in /usr/local/share/ka9q-radio/modes.txt
 
 struct modetab {
   char name[16];
@@ -31,6 +38,7 @@ struct modetab {
 #define PKTSIZE 16384
 
 // Incoming RTP packets
+// This should probably be extracted into a more general RTP library
 struct packet {
   struct packet *next;
   struct rtp_header rtp;
@@ -70,31 +78,17 @@ struct demod {
   pthread_mutex_t qmutex;
   struct packet *queue;
 
-  struct rtp_state rtp_state;
+  struct rtp_state rtp_state; // State of the I/Q RTP receiver
 
-  // Thread that processes samples from RTP receiver and 
+  // Processes sequenced RTP packets from the RTP receiver thread
+  // Apply I/Q corrections, spin down with 2nd (software) local oscillator,
+  // apply Doppler corrections (if used), and pass to input half of pre-detection filter
   pthread_t proc_samples;
+
   // I/Q correction parameters
   float DC_i,DC_q;       // Average DC offsets
   float sinphi;          // smoothed estimate of I/Q phase error
   float imbalance;       // Ratio of I power to Q power
-
-
-  // Demodulator thread data
-  pthread_t demod_thread;
-  void * (*demod)(void *);        // Entry point to demodulator
-  char mode[16];                  // printable mode name
-  char demod_name[16];
-  int terminate;                  // set to 1 by set_mode() to request graceful termination
-  int flags;                      // Special flags to demodulator
-// Modetab flags
-#define ISB 1      // Cross-conjugation of positive and negative frequencies, for ISB
-#define FLAT 2      // No baseband filtering for FM
-#define PLL 4  // Coherent carrier tracking
-#define CAL 8       // Calibrate mode in coherent demod; adjust calibrate rather than frequency
-#define SQUARE   16 // Square carrier in coherent loop (BPSK/suppressed carrier AM)
-#define ENVELOPE 32 // Envelope detection of AM
-#define MONO     64 // Only output I channel of linear mode
 
   double freq;              // Desired carrier frequency
 
@@ -112,6 +106,7 @@ struct demod {
   // Less than or equal to +/- samprate/2
   float min_IF;
   float max_IF;
+
 
   // Doppler shift correction (optional)
   pthread_t doppler_thread;          // Thread that reads file and sets doppler
@@ -156,6 +151,25 @@ struct demod {
   // 0 => rectangular window; increasing values widens main lobe and decreases ripple
   float kaiser_beta;
 
+  // Mode-specific demodulator thread
+  // Run output half of pre-detection filter and pass through AM, FM or linear demodulator
+  // The AM and linear demodulators send baseband audio directly to the network;
+  // the FM demodulator performs further audio filtering
+  pthread_t demod_thread;
+  void * (*demod)(void *);        // Entry point to demodulator
+  char mode[16];                  // printable mode name
+  char demod_name[16];
+  int terminate;                  // set to 1 by set_mode() to request graceful termination
+  int flags;                      // Special flags to demodulator
+// Modetab flags
+#define ISB 1      // Cross-conjugation of positive and negative frequencies, for ISB
+#define FLAT 2      // No baseband filtering for FM
+#define PLL 4  // Coherent carrier tracking
+#define CAL 8       // Calibrate mode in coherent demod; adjust calibrate rather than frequency
+#define SQUARE   16 // Square carrier in coherent loop (BPSK/suppressed carrier AM)
+#define ENVELOPE 32 // Envelope detection of AM
+#define MONO     64 // Only output I channel of linear mode
+
   // Demodulator configuration settngs
   float headroom;   // Audio level headroom
   float hangtime;   // Linear AGC hang time, seconds
@@ -173,10 +187,9 @@ struct demod {
   float pdeviation; // Peak frequency deviation (FM)
   float cphase;     // Carrier phase change (DSB/PSK)
   float plfreq;     // PL tone frequency (FM);
-  float spare;
+  float spare;      // Currently used for PLL lock hysteresis
 
-  struct filter_in *audio_master;
-
+  struct filter_in *audio_master; // FM only
 };
 extern char Libdir[];
 extern int Tunestep;
@@ -184,6 +197,7 @@ extern struct modetab Modes[];
 extern int Nmodes;
 
 
+// Functions/methods to control a demod instance
 void *filtert(void *arg);
 int LO2_in_range(struct demod *,double f,int);
 double get_freq(struct demod *);
@@ -203,7 +217,6 @@ void update_status(struct demod *,struct status *);
 void *proc_samples(void *);
 const float compute_n0(struct demod const *);
 
-
 // Load mode definition table
 int readmodes(char *);
 
@@ -214,7 +227,6 @@ int loadstate(struct demod *,char const *);
 // Save and load calibration
 int loadcal(struct demod *);
 int savecal(struct demod *);
-
 
 // Thread entry points
 void *display(void *);

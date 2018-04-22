@@ -1,9 +1,15 @@
+// $Id: multicast.h,v 1.11 2018/04/22 22:49:28 karn Exp $
+// Multicast and RTP functions, constants and structures
+// Not every RTP module uses these yet, they need to be revised
+// Copyright 2018, Phil Karn, KA9Q
+
 #ifndef _MULTICAST_H
 #define _MULTICAST_H
 int setup_mcast(char const *target,int output);
 extern char Default_mcast_port[];
 extern int Mcast_ttl;
 
+// Internal representation of RTP header -- NOT what's on wire!
 struct rtp_header {
   int version;
   uint8_t type;
@@ -26,9 +32,11 @@ struct rtp_header {
 
 #define OPUS_PT (111) // Hard-coded NON-standard payload type for OPUS (should be dynamic with sdp)
 
+// Convert between internal and wire representations of RTP header
 unsigned char *ntoh_rtp(struct rtp_header *,unsigned char *);
 unsigned char *hton_rtp(unsigned char *, struct rtp_header *);
 
+// Internal state of common RTP receiver module
 struct rtp_state {
   int init;
   uint16_t expected_seq;
@@ -38,7 +46,8 @@ struct rtp_state {
   int reseq;
 };
 
+// Function to process incoming RTP packet headers
+// Returns number of samples dropped or skipped by silence suppression, if any
 int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int samples);
-
 
 #endif

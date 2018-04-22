@@ -1,17 +1,18 @@
+// $Id: ax25.c,v 1.2 2018/04/22 22:31:51 karn Exp $
+// AX.25 frame header decoding (this takes me wayyyyy back)
+// Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
-//#include <pthread.h>
 #include <stdio.h>
-//#include <stdlib.h>
-//#include <unistd.h>
 #include <string.h>
-//#include <errno.h>
 #include <ctype.h>
 #include <math.h>
 
 #include "ax25.h"
 
 
+// Retrieve callsign field from AX.25 header
+// return pointer to string of form "KA9Q-11" in user-provided buffer which must be at least 10 bytes long
 char *get_callsign(char *result,unsigned char *in){
   char callsign[7],c;
   
@@ -27,7 +28,11 @@ char *get_callsign(char *result,unsigned char *in){
   return result;
 }
 
-
+// Dump an AX.25 frame to standard output
+// Decode address headers as source -> digi1 -> digi2 -> dest
+// show currently transmitting station in UPPER CASE
+// show type and control field
+// dump entire frame in hex/ascii
 int dump_frame(unsigned char *frame,int bytes){
 
   // By default, no digipeaters; will update if there are any
@@ -123,7 +128,8 @@ int dump_frame(unsigned char *frame,int bytes){
   return 0;
 }
 
-// Check CRC-CCITT on frame, return 1 if good, 0 otherwise
+// Check 16-bit AX.25 standard CRC-CCITT on frame
+// return 1 if good, 0 otherwise
 int crc_good(unsigned char *frame,int length){
   unsigned int const crc_poly = 0x8408;
 	
@@ -142,6 +148,7 @@ int crc_good(unsigned char *frame,int length){
   return(crc == 0xf0b8); // Note comparison
 }
 
+// Base 91 encoding used by APRS
 int decode_base91(char *in){
   int result = 0;
 
