@@ -426,24 +426,34 @@ Other ka9q-radio Modules
 Other modules in the package provide miscellaneous functions and/or
 start more complex planned features. None have especially
 complex user interfaces; most take only a few command line arguments
-and can run as background daemons.
+and can run as background daemons. They are given in alphabetical order
 
-'Funcube'
+"aprs"
 
-The 'funcube' module takes I/Q data from a locally connected FCD and
-multicasts it over the local LAN. It accepts unicast commands to tune
-the radio and set analog gains. It will automatically reduce
-gain to avoid A/D saturation. Similar modules will be written for
-other SDR front ends such as the SDRPlay and RTL-SDR that will either
-talk directly to the hardware or through "shimware" such as SoapySDR.
+This unfinished module accepts decoded AX.25 frames from the "packet'
+module, extracts APRS position data from a selected station, computes
+the azimuth, elevation and range to that station from a specified
+point, and commands antenna rotors to point at the transmitting
+station. This was written specifically for tracking high altitude
+balloons.
 
-'IQrecord' and 'IQplay"
+'funcube'
 
-The 'iqrecord' and 'iqplay' modules perform the functions suggested by
-their names. 'iqrecord' accepts multicast I/Q or PCM audio streams
-and writes them to disk. Gaps in the multicast stream due to lost
-packets or silence suppression are seeked over in a recording to
-maintain the correct sample count and playback timing.
+This module takes I/Q data from a locally connected FCD and multicasts
+it over the local LAN. It accepts unicast commands to tune the radio
+and set analog gains. It will automatically reduce gain to avoid A/D
+saturation. Similar modules will be written for other SDR front ends
+such as the SDRPlay and RTL-SDR that will either talk directly to the
+hardware or through "shimware" such as SoapySDR.
+
+'iqrecord' and 'iqplay"
+
+These modules perform the functions suggested by their
+names. 'iqrecord' accepts multicast I/Q or PCM audio streams and
+writes them to disk. Gaps in the multicast stream due to lost packets
+or silence suppression are seeked over in a recording to maintain the
+correct sample count and playback timing. With a file system that
+supports "holes", disk blocks need not be allocated to these silent periods.
 
 Raw I/Q streams are written into files named as 'iqrecord-xxxxxx-n'
 where xxxxxx is the RTP SSRC (Stream Source Identifier) and 'n' is a
@@ -484,7 +494,13 @@ at present) using the meta data contained in the external file
 attributes. It can also read a raw I/Q sample stream from standard input to
 simulate SDR front end hardware.
 
-'Opus'
+'modulate'
+
+A simple (and unfinished) test modulator that takes baseband audio,
+amplitude modulates it on a specified carrier frequency, and emits it
+on standard output as an I/Q sample stream.
+
+'opus'
 
 The 'opus' module was described earlier as an optional "transcoder"
 that accepts uncompressed PCM (either mono or stereo) and produces a
@@ -507,7 +523,15 @@ packets per second even as the PCM input stream continues. If the PCM
 input stream stops, the Opus output stops regardless of the
 discontinuous setting.
 
-"Packet"
+Opus streams are always stereo even when the audio is mono. There is
+no capacity penalty and it simplifies things.
+
+'opussend'
+
+This is a standalone utility that takes PCM audio from a local sound interface,
+compresses it with Opus and multicasts it as an RTP network stream.
+
+'packet'
 
 This module is my first digital demodulator module for the ka9q-radio
 package. It accepts PCM audio from the 'radio' program, demodulates
@@ -517,15 +541,10 @@ RTP headers; this will probably change. The decoded frames can also
 optionally be displayed on the console. Otherwise the module can run
 as an unattended daemon.
 
-"APRS"
+'pcmsend'
 
-This unfinished module accepts decoded AX.25 frames from the "packet'
-module, extracts APRS position data from a selected station, computes
-the azimuth, elevation and range to that station from a specified
-point, and commands antenna rotors to point at the transmitting
-station. This was written specifically for tracking high altitude
-balloons.
-
+This is the same as opussend, except that the output stream is
+uncompressed 48 kHz PCM (mono or stereo).
 
 Footnotes and Side bars
 
