@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.107 2018/04/20 06:21:44 karn Exp $
+// $Id: main.c,v 1.108 2018/04/22 08:55:50 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -111,9 +111,9 @@ int main(int argc,char *argv[]){
   demod->L = 3840;      // Number of samples in buffer: FFT length = L + M - 1
   demod->M = 4352+1;    // Length of filter impulse response
   demod->kaiser_beta = 3.0; // Reasonable compromise
-  strlcpy(demod->iq_mcast_address_text,"hf-mcast.local",sizeof(demod->iq_mcast_address_text));
+  strlcpy(demod->iq_mcast_address_text,"iq.hf.mcast.local",sizeof(demod->iq_mcast_address_text));
   demod->headroom = pow(10.,-15./20); // -15 dB
-  strlcpy(audio->audio_mcast_address_text,"audio-pcm-mcast.local",sizeof(audio->audio_mcast_address_text));
+  strlcpy(audio->audio_mcast_address_text,"pcm.hf.mcast.local",sizeof(audio->audio_mcast_address_text));
   demod->tunestep = 0;  // single digit hertz position
   demod->calibrate = 0;
   demod->imbalance = 1; // 0 dB
@@ -231,7 +231,7 @@ int main(int argc,char *argv[]){
     perror("can't open control socket");
 
   // Blocksize really should be computed from demod->L and decimate
-  if(setup_audio(audio,1024) != 0){
+  if(setup_audio(audio) != 0){
     fprintf(stderr,"Audio setup failed\n");
     exit(1);
   }
@@ -377,7 +377,7 @@ int loadcal(struct demod *demod){
   fclose(fp);
   return 0;
 }
-// Save calibration factor for specified sending IP
+// Save calibration factor for specified mcast group (assumes only one sender)
 int savecal(struct demod *demod){
   // Dump receiver state to file
   FILE *fp;

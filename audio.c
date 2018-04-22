@@ -1,4 +1,4 @@
-// $Id: audio.c,v 1.67 2018/04/11 07:08:18 karn Exp $
+// $Id: audio.c,v 1.68 2018/04/22 08:56:24 karn Exp $
 // Audio multicast routines for KA9Q SDR receiver
 // Handles linear 16-bit PCM, mono and stereo
 // Copyright 2017 Phil Karn, KA9Q
@@ -148,7 +148,7 @@ void audio_cleanup(void *p){
 }
 
 // Set up encoding/sending tasks
-int setup_audio(struct audio * const audio,int blocksize){
+int setup_audio(struct audio * const audio){
   assert(audio != NULL);
 
   time_t tt = time(NULL);
