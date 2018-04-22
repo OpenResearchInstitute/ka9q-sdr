@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.93 2018/04/20 08:14:34 karn Exp $
+# $Id: Makefile,v 1.93 2018/04/20 08:14:34 karn Exp karn $
 #CC=g++
 INCLUDES=
 COPTS=-g -O2 -DNDEBUG=1 -std=gnu11 -pthread -Wall -funsafe-math-optimizations
@@ -61,7 +61,7 @@ libfcd.a: fcd.o hid-libusb.o
 	ar rv $@ $^
 	ranlib $@
 
-libradio.a: am.o attr.o audio.o ax25.o bandplan.o display.o doppler.o fcd.o filter.o fm.o gr.o knob.o linear.o misc.o modes.o multicast.o radio.o touch.o
+libradio.a: am.o attr.o audio.o ax25.o bandplan.o display.o doppler.o filter.o fm.o gr.o knob.o linear.o misc.o modes.o multicast.o radio.o touch.o
 	ar rv $@ $^
 	ranlib $@
 
