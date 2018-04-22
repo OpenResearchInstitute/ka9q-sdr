@@ -1,4 +1,4 @@
-# $Id: Makefile.osx,v 1.38 2018/04/16 22:05:23 karn Exp $
+# $Id: Makefile.osx,v 1.38 2018/04/16 22:05:23 karn Exp karn $
 #CC=g++
 GCC=g++
 #COPTS=-g -O2 -std=gnu11 -pthread -Wall -funsafe-math-optimizations
@@ -60,7 +60,7 @@ libfcd.a: fcd.o hid-libusb.o
 	ar rv $@ $^
 	ranlib $@
 
-libradio.a: am.o attr.o audio.o ax25.o bandplan.o display.o doppler.o fcd.o filter.o fm.o gr.o linear.o misc.o modes.o multicast.o radio.o
+libradio.a: am.o attr.o audio.o ax25.o bandplan.o display.o doppler.o filter.o fm.o gr.o linear.o misc.o modes.o multicast.o radio.o
 	ar rv $@ $^
 	ranlib $@
 
