@@ -1,4 +1,4 @@
-// $Id: radio.h,v 1.65 2018/04/22 18:05:02 karn Exp $
+// $Id: radio.h,v 1.66 2018/04/23 09:53:58 karn Exp $
 // Internal structures and functions of the 'radio' program
 // Nearly all internal state is in the 'demod' structure
 // More than one can exist in the same program,
@@ -59,7 +59,6 @@ struct demod {
   char iq_mcast_address_text[256];
   struct sockaddr input_source_address;
   struct sockaddr ctl_address;
-  long long iq_packets; // Count of I/Q input packets received
   long long samples;    // Count of raw I/Q samples received
 
   struct status requested_status; // The status we want the FCD to be in

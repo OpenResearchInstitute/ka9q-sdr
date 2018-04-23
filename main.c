@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.109 2018/04/22 22:19:42 karn Exp $
+// $Id: main.c,v 1.110 2018/04/23 09:56:32 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -317,21 +317,18 @@ void *rtp_recv(void *arg){
       continue; // Too small for RTP, ignore
 
     unsigned char *dp = pkt->content;
-
     dp = ntoh_rtp(&pkt->rtp,dp);
     size -= (dp - pkt->content);
     
-    if(pkt->rtp.type != IQ_PT)
-      continue; // Wrong type
-
     if(pkt->rtp.pad){
       // Remove padding
       size -= dp[size-1];
       pkt->rtp.pad = 0;
     }
-    demod->iq_packets++;
+    if(pkt->rtp.type != IQ_PT)
+      continue; // Wrong type
 
-    // Host byte order
+    // Note these are in host byte order, i.e., *little* endian because we don't have to interoperate with anything else
     struct status new_status;
     new_status.timestamp = *(long long *)dp;
     new_status.frequency = *(double *)&dp[8];
@@ -343,7 +340,6 @@ void *rtp_recv(void *arg){
     size -= 24;
     update_status(demod,&new_status);
 
-
     pkt->data = dp;
     pkt->len = size;
 
@@ -351,15 +347,15 @@ void *rtp_recv(void *arg){
     struct packet *q_prev = NULL;
     struct packet *qe = NULL;
     pthread_mutex_lock(&demod->qmutex);
-    for(qe = demod->queue; qe; q_prev = qe,qe = qe->next){
-      if(pkt->rtp.seq < qe->rtp.seq)
-	break;
-    }
+    for(qe = demod->queue; qe && pkt->rtp.seq >= qe->rtp.seq; q_prev = qe,qe = qe->next)
+      ;
+
     pkt->next = qe;
     if(q_prev)
       q_prev->next = pkt;
     else
       demod->queue = pkt; // Front of list
+
     pkt = NULL;        // force new packet to be allocated
     // wake up decoder thread
     pthread_cond_signal(&demod->qcond);

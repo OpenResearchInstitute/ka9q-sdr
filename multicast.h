@@ -1,4 +1,4 @@
-// $Id: multicast.h,v 1.11 2018/04/22 22:49:28 karn Exp $
+// $Id: multicast.h,v 1.12 2018/04/23 09:54:38 karn Exp $
 // Multicast and RTP functions, constants and structures
 // Not every RTP module uses these yet, they need to be revised
 // Copyright 2018, Phil Karn, KA9Q
@@ -41,6 +41,7 @@ struct rtp_state {
   int init;
   uint16_t expected_seq;
   uint32_t expected_timestamp;
+  long long packets;
   long long drops;
   long long dupes;
   int reseq;

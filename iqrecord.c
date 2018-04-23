@@ -1,4 +1,4 @@
-// $Id: iqrecord.c,v 1.15 2018/04/22 21:49:57 karn Exp $
+// $Id: iqrecord.c,v 1.16 2018/04/23 09:52:48 karn Exp $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
 // Copyright 2018 Phil Karn, KA9Q
@@ -48,9 +48,9 @@
 struct session {
   struct session *next;
   struct sockaddr iq_sender;   // Sender's IP address and source port
-  
-  FILE *fp;                    // File being recorded
-  void *iobuffer;
+
+  uint32_t ssrc;               // RTP stream source ID
+  struct rtp_state rtp_state;
   
   int type;                    // RTP payload type (with marker stripped)
   int channels;                // 1 (PCM_MONO) or 2 (PCM_STEREO or IQ)
@@ -58,9 +58,8 @@ struct session {
   double frequency;            // Tuner LO frequency (IQ only)
   unsigned int samprate;       // Nominal sampling rate (explicit in IQ, implicitly 48 kHz in PCM)
 
-  uint32_t ssrc;               // RTP stream source ID
-  uint32_t etimestamp;         // Next expected RTP timestamp
-  uint16_t eseq;               // next expected RTP sequence number
+  FILE *fp;                    // File being recorded
+  void *iobuffer;
 };
 
 int Quiet;
@@ -133,8 +132,7 @@ int main(int argc,char *argv[]){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
   }
-  int n;
-  n = 1 << 20; // 1 MB
+  int n = 1 << 20; // 1 MB
   if(setsockopt(Input_fd,SOL_SOCKET,SO_RCVBUF,&n,sizeof(n)) == -1)
     perror("setsockopt");
 
@@ -162,13 +160,13 @@ void closedown(int a){
 
 // Read from RTP network socket, assemble blocks of samples
 void input_loop(){
-  char filename[PATH_MAX] = "";
-  int badseq = 0;
+  char filename[PATH_MAX];
+  memset(filename,0,sizeof(filename));
 
   while(1){
     // Receive I/Q data from front end
-    socklen_t socksize = sizeof(Sender);
     unsigned char buffer[MAXPKT];
+    socklen_t socksize = sizeof(Sender);
     int size = recvfrom(Input_fd,buffer,sizeof(buffer),0,&Sender,&socksize);
     if(size <= 0){    // ??
       perror("recvfrom");
@@ -181,23 +179,22 @@ void input_loop(){
     unsigned char *dp = buffer;
     struct rtp_header rtp;
     dp = ntoh_rtp(&rtp,dp);
-
-    // Host byte order
-    struct status status;
-    if(rtp.type == IQ_PT){
-      dp = ntoh_status(&status,dp);
-    } else {
-      memset(&status,0,sizeof(status));
-    }
-    signed short *samples = (signed short *)dp;
-    size -= (dp - buffer);
-
     if(rtp.pad){
       // Remove padding
       size -= dp[size-1];
       rtp.pad = 0;
     }
-    
+
+    // I/Q status header (if present) is in host byte order
+    struct status status;
+    if(rtp.type == IQ_PT)
+      dp = ntoh_status(&status,dp);
+    else
+      memset(&status,0,sizeof(status));
+
+    signed short *samples = (signed short *)dp;
+    size -= (dp - buffer);
+
     struct session *sp;
     for(sp = Sessions;sp != NULL;sp=sp->next){
       if(sp->ssrc == rtp.ssrc
@@ -217,8 +214,6 @@ void input_loop(){
       memcpy(&sp->iq_sender,&Sender,sizeof(sp->iq_sender));
       sp->type = rtp.type;
       sp->ssrc = rtp.ssrc;
-      sp->eseq = rtp.seq;
-      sp->etimestamp = rtp.timestamp;
 
       switch(sp->type){
       case PCM_MONO_PT:
@@ -301,27 +296,15 @@ void input_loop(){
       attrprintf(fd,"unixstarttime","%ld.%06ld",(long)tv.tv_sec,(long)tv.tv_usec);
     }
     int sample_count = size / (sizeof(*samples) * sp->channels);
+    off_t offset = rtp_process(&sp->rtp_state,&rtp,sample_count);
 
-    // Accept a window of sequence numbers in case of out-of-order delivery, but reject a big jump unless it persists
-    int seqchange = (int16_t)(rtp.seq - sp->eseq);
-    if(seqchange > 50 || seqchange < -50){
-      if(++badseq < 3){
-	if(!Quiet)
-	  fprintf(stderr,"iqrecord %s: expected seq %u, got %u\n",filename,sp->eseq,rtp.seq);
-	continue;
-      }
-    }
-    badseq = 0;
-    sp->eseq = rtp.seq + 1;
     // The seek offset relative to the current position in the file is the signed (modular) difference between
     // the actual and expected RTP timestamps. This should automatically handle
     // 32-bit RTP timestamp wraps, which occur every ~1 days at 48 kHz and only 6 hr @ 192 kHz
 
     // Should I limit the range on this?
-    off_t offset = (int)(rtp.timestamp - sp->etimestamp);
-    sp->etimestamp = rtp.timestamp + sample_count;
 
-    if(offset != 0)
+    if(offset)
       fseeko(sp->fp,offset,SEEK_CUR);
     fwrite(samples,1,size,sp->fp);
   }

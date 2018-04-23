@@ -1,4 +1,4 @@
-// $Id: packet.c,v 1.12 2018/04/22 22:41:09 karn Exp $
+// $Id: packet.c,v 1.13 2018/04/23 09:55:11 karn Exp $
 // AFSK/FM packet demodulator
 // Reads RTP PCM audio stream, emits decoded frames in multicast UDP
 // Output framea don't have RTP headers, but they should
@@ -24,25 +24,16 @@
 #include "ax25.h"
 
 // Needs to be redone with common RTP receiver module
-struct packet {
-  struct packet *prev;       // Linked list pointers
-  struct packet *next; 
+struct session {
+  struct session *next; 
   uint32_t ssrc;            // RTP Sending Source ID
-  int eseq;                 // Next expected RTP sequence number
-  int etime;                // Next expected RTP timestamp
-  int type;                 // RTP type (10,11,20)
   
   struct sockaddr sender;
   char addr[NI_MAXHOST];    // RTP Sender IP address
   char port[NI_MAXSERV];    // RTP Sender source port
 
+  struct rtp_state rtp_state;
 
-  unsigned long age;
-  unsigned long rtp_packets;    // RTP packets for this session
-  unsigned long drops;      // Apparent rtp packet drops
-  unsigned long invalids;   // Unknown RTP type
-  unsigned long empties;    // RTP but no data
-  unsigned long dupes;      // Duplicate or old serial numbers
   int input_pointer;
   struct filter_in *filter_in;
   pthread_t decode_thread;
@@ -51,8 +42,8 @@ struct packet {
 
 
 
-char *Mcast_address_text = "audio-pcm-mcast.local";
-char *Decode_mcast_address_text = "ax25-mcast.local:8192";
+char *Mcast_address_text = "pcm.vhf.mcast.local";
+char *Decode_mcast_address_text = "ax25.vhf.mcast.local:8192";
 float const SCALE = 1./32768;
 int const Bufsize = 2048;
 int const AN = 2048; // Should be power of 2 for FFT efficiency
@@ -66,33 +57,23 @@ int const Samppbit = 40;
 
 int Input_fd = -1;
 int Output_fd = -1;
-struct packet *Packet;
+struct session *Session;
 extern float Kaiser_beta;
 int Verbose;
 
-struct packet *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
-  struct packet *sp;
-  for(sp = Packet; sp != NULL; sp = sp->next){
+struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
+  struct session *sp;
+  for(sp = Session; sp != NULL; sp = sp->next){
     if(sp->ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
       // Found it
-      if(sp->prev != NULL){
-	// Not at top of bucket chain; move it there
-	if(sp->next != NULL)
-	  sp->next->prev = sp->prev;
-
-	sp->prev->next = sp->next;
-	sp->prev = NULL;
-	sp->next = Packet;
-	Packet = sp;
-      }
       return sp;
     }
   }
   return NULL;
 }
 // Create a new session, partly initialize
-struct packet *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_t seq,uint32_t timestamp){
-  struct packet *sp;
+struct session *make_session(struct sockaddr const *sender,uint32_t ssrc){
+  struct session *sp;
 
   if((sp = calloc(1,sizeof(*sp))) == NULL)
     return NULL; // Shouldn't happen on modern machines!
@@ -100,29 +81,30 @@ struct packet *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_t
   // Initialize entry
   memcpy(&sp->sender,sender,sizeof(struct sockaddr));
   sp->ssrc = ssrc;
-  sp->eseq = seq;
-  sp->etime = timestamp;
 
   // Put at head of bucket chain
-  sp->next = Packet;
-  if(sp->next != NULL)
-    sp->next->prev = sp;
-  Packet = sp;
+  sp->next = Session;
+  Session = sp;
   return sp;
 }
 
-int close_session(struct packet *sp){
+int close_session(struct session *sp){
   if(sp == NULL)
     return -1;
   
   // Remove from linked list
-  if(sp->next != NULL)
-    sp->next->prev = sp->prev;
-  if(sp->prev != NULL)
-    sp->prev->next = sp->next;
-  else
-    Packet = sp->next;
-  free(sp);
+  struct session *se,*se_prev = NULL;
+  for(se = Session; se && se != sp; se_prev = se,se = se->next)
+    ;
+  if(!se)
+    return -1;
+  
+  if(se == sp){
+    if(se_prev)
+      se_prev->next = sp->next;
+    else
+      Session = se_prev;
+  }
   return 0;
 }
 
@@ -130,12 +112,11 @@ int close_session(struct packet *sp){
 // AFSK demod, HDLC decode
 void *decode_task(void *arg){
   pthread_setname("afsk");
-  struct packet *sp = (struct packet *)arg;
+  struct session *sp = (struct session *)arg;
   assert(sp != NULL);
 
   struct filter_out *filter = create_filter_output(sp->filter_in,NULL,1,COMPLEX);
   set_filter(filter,Samprate,+100,+4000,3.0); // Creates analytic, band-limited signal
-
 
   // Tone replica generators (-1200 and -2200 Hz)
   float complex mark_phase = 1;
@@ -301,12 +282,9 @@ int main(int argc,char *argv[]){
   // audio input thread
   // Receive audio multicasts, multiplex into sessions, execute filter front end (which wakes up decoder thread)
   while(1){
-    int size;
-
-    socklen_t socksize = sizeof(sender);
     unsigned char buffer[16384]; // Fix this
-
-    size = recvfrom(Input_fd,buffer,sizeof(buffer),0,&sender,&socksize);
+    socklen_t socksize = sizeof(sender);
+    int size = recvfrom(Input_fd,buffer,sizeof(buffer),0,&sender,&socksize);
     if(size == -1){
       if(errno != EINTR){ // Happens routinely
 	perror("recvfrom");
@@ -318,75 +296,51 @@ int main(int argc,char *argv[]){
       usleep(1000); // Avoid tight loop
       continue; // Too small to be valid RTP
     }
-    // To host order
+    // Extract RTP header
     unsigned char *dp = buffer;
     dp = ntoh_rtp(&rtp,dp);
+    size -= dp - buffer;
 
-    if(rtp.type != PCM_STEREO_PT && rtp.type != PCM_MONO_PT)
-      goto endloop; // Discard unknown RTP types to avoid polluting session table
+    if(rtp.pad){
+      // Remove padding
+      size -= dp[size-1];
+      rtp.pad = 0;
+    }
 
-    struct packet *sp = lookup_session(&sender,rtp.ssrc);
+    if(rtp.type != PCM_MONO_PT)
+      continue; // Only mono PCM for now
+
+    struct session *sp = lookup_session(&sender,rtp.ssrc);
     if(sp == NULL){
       // Not found
-      if((sp = make_session(&sender,rtp.ssrc,rtp.seq,rtp.timestamp)) == NULL){
+      if((sp = make_session(&sender,rtp.ssrc)) == NULL){
 	fprintf(stderr,"No room for new session!!\n");
-	goto endloop;
+	continue;
       }
       getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
-		  //		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM|NI_NUMERICHOST);
-		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
-      sp->dupes = 0;
-      sp->age = 0;
+		  sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
       sp->input_pointer = 0;
       sp->filter_in = create_filter_input(AL,AM,REAL);
       pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
       if(Verbose)
 	fprintf(stderr,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
     }
-    sp->age = 0;
-    int drop = 0;
+    int sample_count = size / sizeof(signed short); // 16-bit sample count
+    int skipped_samples = rtp_process(&sp->rtp_state,&rtp,sample_count);
+    if(skipped_samples < 0)
+	continue;	// Drop probable duplicate(s)
 
-    sp->rtp_packets++;
-    if(rtp.seq != sp->eseq){
-      int const diff = (int)(rtp.seq - sp->eseq);
-      if(Verbose > 1)
-	fprintf(stderr,"ssrc %lx: expected %d got %d\n",(unsigned long)rtp.ssrc,sp->eseq,rtp.seq);
-      if(diff < 0 && diff > -10){
-	sp->dupes++;
-	goto endloop;	// Drop probable duplicate
+    // Ignore skipped_samples > 0; no real need to maintain sample count when squelch closes
+    // Even if its caused by dropped RTP packets there's no FEC to fix it anyway
+    signed short *samples = (signed short *)dp;
+    while(sample_count-- > 0){
+      // Swap sample to host order, convert to float
+      sp->filter_in->input.r[sp->input_pointer++] = ntohs(*samples++) * SCALE;
+      if(sp->input_pointer == sp->filter_in->ilen){
+	execute_filter_input(sp->filter_in); // Wakes up any threads waiting for data on this filter
+	sp->input_pointer = 0;
       }
-      drop = diff; // Apparent # packets dropped
-      sp->drops += abs(drop);
     }
-    sp->eseq = (rtp.seq + 1) & 0xffff;
-
-    sp->type = rtp.type;
-    size -= sizeof(rtp); // Bytes in payload
-    if(size <= 0){
-      sp->empties++;
-      goto endloop; // empty?!
-    }
-    int samples = 0;
-
-    switch(rtp.type){
-    case 11: // Mono only for now
-      samples = size / 2;
-      while(samples-- > 0){
-	// Swap sample to host order, convert to float
-	sp->filter_in->input.r[sp->input_pointer++] = ntohs(*dp++) * SCALE;
-	if(sp->input_pointer == sp->filter_in->ilen){
-	  execute_filter_input(sp->filter_in); // Wakes up any threads waiting for data on this filter
-	  sp->input_pointer = 0;
-	}
-      }
-      break;
-    default:
-      samples = 0;
-      break; // ignore
-    }
-    sp->etime = rtp.timestamp + samples;
-
-  endloop:;
   }
   // Need to kill decoder threads? Or will ordinary signals reach them?
   exit(0);

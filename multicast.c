@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.16 2018/04/20 06:16:46 karn Exp $
+// $Id: multicast.c,v 1.17 2018/04/23 09:54:38 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -249,6 +249,7 @@ unsigned char *hton_rtp(unsigned char *data, struct rtp_header *rtp){
 //           0            if packet is in sequence with no missing timestamps
 //         timestamp jump if packet is in sequence or <10 sequence numbers ahead, with missing timestamps
 int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
+  state->packets++;
   if(!state->init){
     state->expected_seq = rtp->seq;
     state->expected_timestamp = rtp->timestamp;
