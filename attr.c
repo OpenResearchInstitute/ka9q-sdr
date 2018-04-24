@@ -1,7 +1,7 @@
-// $Id: attr.c,v 1.3 2018/04/20 06:16:27 karn Exp $
-// Read and write external file attributes
+// $Id: attr.c,v 1.4 2018/04/22 18:20:21 karn Exp $
+// Low-level extended file attribute routines
 // These are in a separate file mainly because they are so OS-dependent. And gratuitously so.
-// 29 July 2017 Phil Karn, KA9Q
+// Copyright 29 July 2017 Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
 #include <stdio.h>
@@ -22,7 +22,6 @@
 int attrscanf(int fd,char const *name,char const *format, ...){
   int r;
 
-
 #ifdef __linux__   // Grrrrr.....
   char *temp = NULL;
   asprintf(&temp,"user.%s",name);
@@ -39,7 +38,7 @@ int attrscanf(int fd,char const *name,char const *format, ...){
 #endif
   value[r] = '\0';
   free(temp);
-#else // mainly OSX
+#else // mainly OSX, probably BSD
   r = fgetxattr(fd,name,NULL,0,0,0); // How big is it?
   if(r < 0)
     return r;
@@ -55,6 +54,7 @@ int attrscanf(int fd,char const *name,char const *format, ...){
   
   return r;
 }
+// Format an extended attribute and attach it to an open file
 int attrprintf(int fd,char const *attr,char const *format, ...){
   char *args = NULL;
   int r;

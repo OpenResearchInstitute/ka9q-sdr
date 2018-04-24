@@ -1,5 +1,7 @@
-// $Id: misc.c,v 1.23 2018/04/09 21:08:56 karn Exp $
+// $Id: misc.c,v 1.24 2018/04/22 22:25:40 karn Exp $
 // Miscellaneous low-level DSP routines
+// Copyright 2018, Phil Karn, KA9Q
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1 // Needed to get sincos/sincosf
 #endif
@@ -21,6 +23,7 @@
 #include "radio.h"
 
 // return unit magnitude complex number with phase x radians
+// I.e., cos(x) + j*sin(x)
 complex float const csincosf(const float x){
   float s,c;
 
@@ -33,7 +36,7 @@ complex float const csincosf(const float x){
   return CMPLXF(c,s);
 }
 
-// return unit magnitude complex number with phase x radians
+// return unit magnitude complex number with given phase x
 complex double const csincos(const double x){
   double s,c;
 
@@ -41,6 +44,7 @@ complex double const csincos(const double x){
   return CMPLX(c,s);
 }
 
+// Complex norm (sum of squares of real and imaginary parts)
 float const cnrmf(const complex float x){
   return crealf(x)*crealf(x) + cimagf(x) * cimagf(x);
 }
@@ -48,26 +52,13 @@ double const cnrm(const complex double x){
   return creal(x)*creal(x) + cimag(x) * cimag(x);
 }
 
-// Return 1 if phasor appears to be initialized, 0 if not
+// Return 1 if complex phasor appears to be initialized, 0 if not
 int is_phasor_init(const complex double x){
   if(isnan(creal(x)) || isnan(cimag(x)) || cnrm(x) < 0.9)
     return 0;
   return 1;
 }
 
-
-// Average power in an array of complex floats
-const float cpower(const complex float *data, const int len){
-  float amplitude = 0;
-  int n;
-
-  if(len <= 0)
-    return 0;
-  for(n=0; n < len; n++)
-    amplitude += cnrmf(data[n]);
-
-  return amplitude/len;
-}
 
 // Fill buffer from pipe
 // Needed because reads from a pipe can be partial

@@ -1,3 +1,8 @@
+// $Id: bandplan.c,v 1.11 2018/04/22 18:08:48 karn Exp $
+// Routines for processing the file /usr/local/share/ka9q-radio/bandplan.txt
+// containing general information about ham radio bandplans, other radio channels, etc
+// This information is displayed in the 'Info' window by the 'radio' program
+// Copyright 2018, Phil Karn, KA9Q
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +21,7 @@ char Bandplan_file[] = "bandplan.txt";
 struct bandplan Bandplans[MAX_BANDPLANS];
 int Nbandplans;
 
-
+// Sort callback function
 static int compar(void const *a,void const *b){
   const double f = *(double *)a;
   const struct bandplan *bp = b;
@@ -32,6 +37,7 @@ static int compar(void const *a,void const *b){
 int Bandplan_init;
 extern int init_bandplan(void);
 
+// Look up a given frequency, return pointer to appropriate entry
 struct bandplan *lookup_frequency(double f){
   double key;
 
@@ -45,6 +51,7 @@ struct bandplan *lookup_frequency(double f){
 }
 
 
+// Read bandplan.txt, initialize data structures
 int init_bandplan(){
   char fname[PATH_MAX];
 
@@ -128,6 +135,7 @@ int init_bandplan(){
   return 0;
 }
 #if 0
+// Standalone test driver program
 int main(){
   double f;
   struct bandplan const *bp;

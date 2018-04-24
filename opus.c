@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.18 2018/04/20 06:18:11 karn Exp $
+// $Id: opus.c,v 1.19 2018/04/23 09:53:11 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -65,10 +65,9 @@ struct session {
   float *audio_buffer;      // Buffer to accumulate PCM until enough for Opus frame
   int audio_index;          // Index of next sample to write into audio_buffer
 
-  uint32_t otimestamp;
-  uint16_t oseq;
+  uint32_t output_timestamp;
+  uint16_t output_seq;
 
-  unsigned long packets;    // RTP packets for this session
   unsigned long underruns;  // Callback count of underruns (stereo samples) replaced with silence
 };
 struct session *Audio;
@@ -241,7 +240,6 @@ int main(int argc,char * const argv[]){
       if(0 && error != OPUS_OK)
 	fprintf(stderr,"opus_encoder_ctl set framesize %d (%.1lf ms): error %d\n",Opus_frame_size,Opus_blocktime,error);
     }
-    sp->packets++;
     sp->type = rtp_in.type;
     int samples_skipped = rtp_process(&sp->rtp_state,&rtp_in,frame_size);
     
@@ -363,7 +361,7 @@ int send_samples(struct session *sp,float left,float right){
     memset(&rtp_out,0,sizeof(rtp_out));
     rtp_out.version = RTP_VERS;
     rtp_out.type = OPUS_PT; // Opus
-    rtp_out.seq = sp->oseq;
+    rtp_out.seq = sp->output_seq;
 
     if(sp->silence){
       // Beginning of talk spurt after silence, set marker bit
@@ -372,8 +370,8 @@ int send_samples(struct session *sp,float left,float right){
     } else
       rtp_out.marker = 0;
     rtp_out.ssrc = sp->ssrc;
-    rtp_out.timestamp = sp->otimestamp;
-    sp->otimestamp += Opus_frame_size; // Always increase timestamp
+    rtp_out.timestamp = sp->output_timestamp;
+    sp->output_timestamp += Opus_frame_size; // Always increase timestamp
     
     unsigned char outbuffer[16384]; // fix this to a more reasonable number
     unsigned char *dp = outbuffer;
@@ -383,7 +381,7 @@ int send_samples(struct session *sp,float left,float right){
     if(!Discontinuous || size > 2){
       // ship it
       size = send(Output_fd,outbuffer,dp-outbuffer,0);
-      sp->oseq++; // Increment only if packet is sent
+      sp->output_seq++; // Increment only if packet is sent
     } else
       sp->silence = 1;
 

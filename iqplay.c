@@ -1,4 +1,4 @@
-// $Id: iqplay.c,v 1.23 2018/04/15 08:57:52 karn Exp $
+// $Id: iqplay.c,v 1.24 2018/04/22 21:46:05 karn Exp $
 // Read from IQ recording, multicast in (hopefully) real time
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1 // allow bind/connect/recvfrom without casting sockaddr_in6
@@ -29,11 +29,11 @@
 
 
 int Verbose;
-int Rtp_sock; // Socket handle for sending real time stream
 double Default_frequency = 0;
 long Default_samprate = 192000;
 int Blocksize = 256;
 
+int Rtp_sock; // Socket handle for sending real time stream
 
 // Play I/Q file with descriptor 'fd' on network socket 'sock'
 int playfile(int sock,int fd,int blocksize){
@@ -89,7 +89,7 @@ int playfile(int sock,int fd,int blocksize){
 	usleep(s);
       }
     }
-    unsigned char output_buffer[16384]; // fix
+    unsigned char output_buffer[4*blocksize + 256]; // will this allow for largest possible RTP header??
     unsigned char *dp = output_buffer;
     dp = hton_rtp(dp,&rtp);
     dp = hton_status(dp,&status);
@@ -105,7 +105,7 @@ int playfile(int sock,int fd,int blocksize){
     
     // Update time of next scheduled transmission
     sked_time += dt;
-    // Update timestamp
+    // Update nanosecond timestamp
     status.timestamp += blocksize * (long long)1e9 / status.samprate;
   }
   return 0;
@@ -122,16 +122,11 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   seteuid(getuid());
 
-
-  char *locale;
-  int c;
-
-
-
   char *dest = "iq.playback.mcast.local"; // Default for testing
-  locale = getenv("LANG");
+  char *locale = getenv("LANG");
 
   Mcast_ttl = 1; // By default, don't let it route
+  int c;
   while((c = getopt(argc,argv,"vl:b:R:f:r:T:")) != EOF){
     switch(c){
     case 'R':

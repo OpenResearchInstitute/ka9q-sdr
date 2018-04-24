@@ -1,6 +1,8 @@
-// $Id: display.c,v 1.119 2018/04/20 06:24:50 karn Exp $
+// $Id: display.c,v 1.122 2018/04/23 09:52:31 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
+// Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
+
 #define _GNU_SOURCE 1
 #include <errno.h>
 #include <stdio.h>
@@ -38,16 +40,17 @@
 
 float Spare; // General purpose knob for experiments
 
+// Touch screen position (Raspberry Pi display only - experimental)
 int touch_x,touch_y;
 
 extern int Update_interval;
 
+// Screen location of field modification cursor
 int mod_x,mod_y;
 
 // Pop up a temporary window with the contents of a file in the
 // library directory (usually /usr/local/share/ka9q-radio/)
 // then wait for a single keyboard character to clear it
-
 void popup(const char *filename){
   static const int maxcols = 256;
   char fname[PATH_MAX];
@@ -109,7 +112,6 @@ void getentry(char const *prompt,char *response,int len){
 static FILE *Tty;
 static SCREEN *Term;
 
-
 void display_cleanup(void){
   echo();
   nocbreak();
@@ -157,14 +159,15 @@ void adjust_item(struct demod *demod,int direction){
     }
     break;
   case 3: // IF
-    ; // needed because next line is declaration
-    double new_lo2 = demod->second_LO - tunestep;
-    if(LO2_in_range(demod,new_lo2,0)){ // Ignore if out of range
-      if(Frequency_lock){
-	set_freq(demod,get_freq(demod),new_lo2);
-      } else {
-	// Vary RF and IF together to keep LO1 the same
-	set_freq(demod,get_freq(demod) + tunestep,new_lo2);
+    {
+      double new_lo2 = demod->second_LO - tunestep;
+      if(LO2_in_range(demod,new_lo2,0)){ // Ignore if out of range
+	if(Frequency_lock){
+	  set_freq(demod,get_freq(demod),new_lo2);
+	} else {
+	  // Vary RF and IF together to keep LO1 the same
+	  set_freq(demod,get_freq(demod) + tunestep,new_lo2);
+	}
       }
     }
     break;
@@ -187,7 +190,8 @@ void adjust_item(struct demod *demod,int direction){
     break;
   }
 }
-// Hooks for knob.c
+// Hooks for knob.c (experimental)
+// It seems better to just use the Griffin application to turn knob events into keystrokes or mouse events
 void adjust_up(void *arg){
   struct demod *demod = arg;
   adjust_item(demod,1);
@@ -210,9 +214,7 @@ void toggle_lock(void *arg){
 
 
 
-#if 0 // highly incomplete, won't compile yet
-
-
+#if 0 // highly incomplete, won't compile yet, will probably go away
 double scrape_number(WINDOW *win, int y, int x, double **increment){
   char c;
   int i = 0;
@@ -310,7 +312,7 @@ void decrement(void){
 
 // Thread to display receiver state, updated at 10Hz by default
 // Uses the ancient ncurses text windowing library
-// Also services keyboard and tuning knob, if present
+// Also services keyboard, mouse and tuning knob, if present
 void *display(void *arg){
   // Drop priority back to normal; the display isn't as critical as the stuff handling signals
   // (Remember Apollo 11's 1201/1202 alarms!)
@@ -345,9 +347,9 @@ void *display(void *arg){
   cbreak();
   noecho();
 
+  // Set up display subwindows
   int row = 0;
   int col = 0;
-
   WINDOW * const tuning = newwin(8,35,row,col);    // Frequency information
   col += 35;
   WINDOW * const sig = newwin(8,25,row,col); // Signal information
@@ -404,11 +406,12 @@ void *display(void *arg){
     int row = 1;
     int col = 1;
     if(Frequency_lock)
-      wattron(tuning,A_UNDERLINE);
-    mvwprintw(tuning,row,col,"%'28.3f Hz",get_freq(demod));
+      wattron(tuning,A_UNDERLINE); // Underscore means the frequency is locked
+    mvwprintw(tuning,row,col,"%'28.3f Hz",get_freq(demod)); // RF carrier frequency
     mvwaddstr(tuning,row,col,"Carrier");
     row++;
 
+    // Center of passband
     mvwprintw(tuning,row,col,"%'28.3f Hz",get_freq(demod) + (demod->high + demod->low)/2);
     mvwaddstr(tuning,row++,col,"Center");
 
@@ -423,6 +426,7 @@ void *display(void *arg){
     wattroff(tuning,A_UNDERLINE);
 
 #if 0
+    // This indication needs to be redone
     if(!LO2_in_range(demod,demod->second_LO,1)){
       // LO2 is near its edges where signals from the opposite edge
       // get aliased; warn about this
@@ -437,6 +441,7 @@ void *display(void *arg){
     mvwprintw(tuning,row,col,"%'28.3f Hz",-demod->second_LO);
     mvwaddstr(tuning,row++,col,"IF");
 
+    // Doppler info displayed only if active
     double dopp = get_doppler(demod);
     if(dopp != 0){
       mvwprintw(tuning,row,col,"%'28.3f Hz",dopp);
@@ -453,14 +458,13 @@ void *display(void *arg){
 
     // Display ham band emission data, if available
     // Lines are variable length, so clear window before starting
-
     wclrtobot(info);  // Output 
     row = 1;
     mvwprintw(info,row++,1,"Receiver profile: %s",demod->mode);
 
-    if(demod->doppler_command){
+    if(demod->doppler_command)
       mvwprintw(info,row++,1,"Doppler: %s",demod->doppler_command);
-    }
+
     struct bandplan const *bp_low,*bp_high;
     bp_low = lookup_frequency(get_freq(demod)+demod->low);
     bp_high = lookup_frequency(get_freq(demod)+demod->high);
@@ -477,14 +481,14 @@ void *display(void *arg){
 
       if(r.modes){
 	mvwaddstr(info,row++,1,"Emissions: ");
-	if(r.modes & CW)
-	  waddstr(info,"CW ");
-	if(r.modes & DATA)
-	  waddstr(info,"Data ");
 	if(r.modes & VOICE)
 	  waddstr(info,"Voice ");
 	if(r.modes & IMAGE)
 	  waddstr(info,"Image");
+	if(r.modes & DATA)
+	  waddstr(info,"Data ");
+	if(r.modes & CW)
+	  waddstr(info,"CW "); // Last since it's permitted almost everywhere
       }
       if(r.classes){
 	mvwaddstr(info,row++,1,"Privs: ");
@@ -500,7 +504,6 @@ void *display(void *arg){
 	  waddstr(info,"Nov ");
       }
     }
-
     box(info,0,0);
     mvwaddstr(info,0,17,"Info");
 
@@ -523,7 +526,7 @@ void *display(void *arg){
     mvwaddstr(filtering,row++,col,"FIR");
     mvwprintw(filtering,row,col,"%'17.3f Hz",demod->samprate / N);
     mvwaddstr(filtering,row++,col,"Freq bin");
-    mvwprintw(filtering,row,col,"%'17.3f ms",1000*(N - (demod->M - 1)/2)/demod->samprate);
+    mvwprintw(filtering,row,col,"%'17.3f ms",1000*(N - (demod->M - 1)/2)/demod->samprate); // Is this correct?
     mvwaddstr(filtering,row++,col,"Delay");
     mvwprintw(filtering,row,col,"%17d",demod->interpolate);
     mvwaddstr(filtering,row++,col,"Interpolate");
@@ -539,8 +542,7 @@ void *display(void *arg){
     if(demod->filter_out != NULL)
       bw = demod->samprate * demod->filter_out->noise_gain;
     float sn0 = demod->bb_power / demod->n0 - bw;
-    if(sn0 < 0)
-      sn0 = 0; // Force to 0 so it'll show as -Inf dB
+    sn0 = max(sn0,0.0f); // Can go negative due to inconsistent smoothed values; clip it at zero
 
     row = 1;
     col = 1;
@@ -566,7 +568,7 @@ void *display(void *arg){
     row = 1;
     int rcol = 9;
     int lcol = 1;
-    // Display these only if they're in use by the current mode
+    // Display only if used by current mode
     if(demod->snr >= 0){
       mvwprintw(demodulator,row,rcol,"%11.1f dB",power2dB(demod->snr));
       mvwaddstr(demodulator,row++,lcol,"Loop SNR");
@@ -663,7 +665,8 @@ void *display(void *arg){
     mvwaddstr(options,0,2,"Options");
 
 
-    // Display list of modes, underlining the active one
+    // Display list of modes defined in /usr/local/share/ka9q-radio/modes.txt
+    // Underline the active one
     // Can be selected with mouse
     row = 1; col = 1;
     for(int i=0;i<Nmodes;i++){
@@ -688,6 +691,7 @@ void *display(void *arg){
     col = 1;
     extern uint32_t Ssrc;
 
+    // Estimate actual I/Q sample rate against local time of day clock
     struct timeval current_time;
     gettimeofday(&current_time,NULL);
     double interval = current_time.tv_sec - last_time.tv_sec
@@ -703,7 +707,7 @@ void *display(void *arg){
     wclrtoeol(network);
     mvwprintw(network,row++,col,"Source: %s:%s -> %s",source,sport,demod->iq_mcast_address_text);
     mvwprintw(network,row++,col,"IQ pkts %'llu samples %'llu rate %'.3lf Hz",
-	      demod->iq_packets,demod->samples,actual_sample_rate);
+	      demod->rtp_state.packets,demod->samples,actual_sample_rate);
     if(demod->rtp_state.drops)
       wprintw(network," drops %'llu",demod->rtp_state.drops);
     if(demod->rtp_state.dupes)
@@ -719,7 +723,6 @@ void *display(void *arg){
 
     touchwin(debug); // since we're not redrawing it every cycle
 
-  
     // Highlight cursor for tuning step
     // A little messy because of the commas in the frequencies
     // They come from the ' option in the printf formats
@@ -765,6 +768,9 @@ void *display(void *arg){
     wnoutrefresh(network);
 #if FUNCTIONKEYS
     // Write function key labels for current mode
+    // These didn't turn out to be very useful
+    // There aren't enough function keys to go around and
+    // just using the mouse or entering the textual mode name seems easier
     slk_set(1,"FM",1);
     slk_set(2,"AM",1);
     slk_set(3,"USB",1);
@@ -779,7 +785,7 @@ void *display(void *arg){
 
     slk_noutrefresh(); // Do this after debug refresh since debug can overlap us
 #endif
-    doupdate();      // Right before we pause
+    doupdate();      // Update the screen right before we pause
     
     // Scan and process keyboard commands
     int c = getch(); // read keyboard with timeout; controls refresh rate
@@ -831,13 +837,13 @@ void *display(void *arg){
       break;
     case ERR:   // no key; timed out. Do nothing.
       break;
-    case 'q':   // Exit entire radio program
+    case 'q':   // Exit entire radio program. Should this be removed? ^C also works.
       goto done;
     case 'h':
     case '?':
       popup("help.txt");
       break;
-    case 'w':
+    case 'w': // Save radio state to file in ~/.radiostate
       {
 	char str[160];
 	getentry("Save state file: ",str,sizeof(str));
@@ -845,7 +851,7 @@ void *display(void *arg){
 	  savestate(demod,str);
       }
       break;
-    case 'I':
+    case 'I': // Change multicast address for input I/Q stream
       {
 	char str[160];
 	getentry("IQ input IP dest address: ",str,sizeof(str));
@@ -932,7 +938,7 @@ void *display(void *arg){
 	set_cal(demod,f * 1e-6);
       }
       break;
-    case 'm':
+    case 'm': // Manually set modulation mode
       {
 	char str[1024];
 	snprintf(str,sizeof(str),"Enter mode [ ");
@@ -947,7 +953,7 @@ void *display(void *arg){
 	set_mode(demod,str,1);
       }
       break;
-    case 'f':   // Tune to new frequency
+    case 'f':   // Tune to new radio frequency
       {
 	char str[160];
 	getentry("Enter carrier frequency: ",str,sizeof(str));
@@ -971,7 +977,7 @@ void *display(void *arg){
     case 'i':    // Recenter IF to +/- samprate/4
       set_freq(demod,get_freq(demod),demod->samprate/4);
       break;
-    case 'u': // Display update rate
+    case 'u':    // Set display update rate in milliseconds (minimum 50, i.e, 20 Hz)
       {
 	char str[160],*ptr;
 	getentry("Enter update interval, ms [<=0 means no auto update]: ",str,sizeof(str));
@@ -1006,7 +1012,7 @@ void *display(void *arg){
 	}
       }
       break;
-    case 'o': // Set/clear option flags
+    case 'o': // Set/clear option flags, most apply only to linear detector
       {
 	char str[160];
 	getentry("Enter option [isb pll cal flat square stereo mono], '!' prefix disables: ",str,sizeof(str));
@@ -1044,6 +1050,7 @@ void *display(void *arg){
       break;
     }
     // Process mouse events
+    // Need to handle the wheel as equivalent to up/down arrows
     int mx,my;
     mx = mouse_event.x;
     my = mouse_event.y;

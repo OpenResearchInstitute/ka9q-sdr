@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.108 2018/04/22 08:55:50 karn Exp $
+// $Id: main.c,v 1.110 2018/04/23 09:56:32 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -65,6 +65,14 @@ void closedown(int a){
 }
 
 
+// The main program sets up the demodulator parameter defaults,
+// overwrites them with command-line arguments and/or state file settings,
+// initializes the various local oscillators, pthread mutexes and conditions
+// sets up multicast I/Q input and PCM audio output
+// Sets up the input half of the pre-detection filter
+// starts the RTP input and downconverter/filter threads
+// sets the initial demodulation mode, which starts the demodulator thread
+// catches signals and eventually becomes the user interface/display loop
 int main(int argc,char *argv[]){
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
@@ -273,7 +281,7 @@ int main(int argc,char *argv[]){
 }
 
 
-// Read from RTP network socket, remove DC offsets,
+// Thread to read from RTP network socket, remove DC offsets,
 // fix I/Q gain and phase imbalance,
 // Write corrected data to circular buffer, wake up demodulator thread(s)
 // when data is available and when SDR status (frequency, sampling rate) changes
@@ -309,21 +317,18 @@ void *rtp_recv(void *arg){
       continue; // Too small for RTP, ignore
 
     unsigned char *dp = pkt->content;
-
     dp = ntoh_rtp(&pkt->rtp,dp);
     size -= (dp - pkt->content);
     
-    if(pkt->rtp.type != IQ_PT)
-      continue; // Wrong type
-
     if(pkt->rtp.pad){
       // Remove padding
       size -= dp[size-1];
       pkt->rtp.pad = 0;
     }
-    demod->iq_packets++;
+    if(pkt->rtp.type != IQ_PT)
+      continue; // Wrong type
 
-    // Host byte order
+    // Note these are in host byte order, i.e., *little* endian because we don't have to interoperate with anything else
     struct status new_status;
     new_status.timestamp = *(long long *)dp;
     new_status.frequency = *(double *)&dp[8];
@@ -335,7 +340,6 @@ void *rtp_recv(void *arg){
     size -= 24;
     update_status(demod,&new_status);
 
-
     pkt->data = dp;
     pkt->len = size;
 
@@ -343,15 +347,15 @@ void *rtp_recv(void *arg){
     struct packet *q_prev = NULL;
     struct packet *qe = NULL;
     pthread_mutex_lock(&demod->qmutex);
-    for(qe = demod->queue; qe; q_prev = qe,qe = qe->next){
-      if(pkt->rtp.seq < qe->rtp.seq)
-	break;
-    }
+    for(qe = demod->queue; qe && pkt->rtp.seq >= qe->rtp.seq; q_prev = qe,qe = qe->next)
+      ;
+
     pkt->next = qe;
     if(q_prev)
       q_prev->next = pkt;
     else
       demod->queue = pkt; // Front of list
+
     pkt = NULL;        // force new packet to be allocated
     // wake up decoder thread
     pthread_cond_signal(&demod->qcond);

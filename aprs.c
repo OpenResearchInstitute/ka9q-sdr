@@ -1,6 +1,9 @@
-// $Id: aprs.c,v 1.5 2018/02/26 22:50:47 karn Exp $
+// $Id: aprs.c,v 1.7 2018/04/23 09:51:53 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
-
+// INCOMPLETE, doesn't yet drive antenna rotors
+// Should also use RTP for AX.25 frames
+// Should get station location from a GPS receiver
+// Copyright 2018, Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
 #include <assert.h>
@@ -21,16 +24,17 @@
 #include "ax25.h"
 #include "misc.h"
 
-#define square(x) ((x)*(x))
+char *Mcast_address_text = "ax25.vhf.mcast.local:8192";
+char *Source = "W6SUN-4";
+
 double const WGS84_E = 0.081819190842622;  // Eccentricity
 double const WGS84_A = 6378137;         // Equatorial radius, meters
-
 
 int Verbose;
 int Input_fd = -1;
 int All;
-char *Mcast_address_text = "ax25-mcast.local:8192";
-char *Source = "W6SUN-4";
+
+#define square(x) ((x)*(x))
 
 int main(int argc,char *argv[]){
   setlocale(LC_ALL,getenv("LANG"));

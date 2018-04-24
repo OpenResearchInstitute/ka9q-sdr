@@ -1,4 +1,9 @@
-// $Id: sdr.h,v 1.6 2018/04/09 21:09:27 karn Exp $
+// $Id: sdr.h,v 1.7 2018/04/22 17:30:22 karn Exp $
+// Interfaces to the Software Defined Radio front end hardware
+// Right now these are somewhat specific to the AMSAT UK Funcube Dongle, and they
+// need to be generalized to other hardware without losing the specific features
+// of each device, e.g., the specific analog gain parameters
+// Copyright 2018, Phil Karn KA9Q
 #ifndef _SDR_H
 #define _SDR_H 1
 

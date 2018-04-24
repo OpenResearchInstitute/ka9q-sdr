@@ -1,5 +1,6 @@
-// $Id: radio.c,v 1.84 2018/04/20 06:19:07 karn Exp $
-// Lower part of radio program - control LOs, set frequency/mode, etc
+// $Id: radio.c,v 1.85 2018/04/22 18:05:02 karn Exp $
+// Core of 'radio' program - control LOs, set frequency/mode, etc
+// Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <unistd.h>
@@ -25,16 +26,20 @@
 #include "audio.h"
 
 
+// These are specific to the AMSAT FUNcube dongle; since other SDR front ends
+// likely have similar limitations, these need to be generalized
 static double const Raster = 125.; // Tune LO1 to multiples of this frequency
 // SDR alias keep-out region, i.e., stay between -(samprate/2 - IF_EXCLUDE) and (samprate/2 - IF_EXCLUDE)
 int IF_EXCLUDE = 16000; // Hardwired for UK Funcube Dongle Pro+, make this more general
 
+// Preferred A/D sample rate; ignored by funcube but may be used by others someday
+const int ADC_samprate = 192000;
 
-
-// thread for first half of sample processing
+// thread for first half of demodulator
 // Preprocessing of samples performed for all demodulators
 // Remove DC biases, equalize I/Q power, correct phase imbalance
 // Update power measurement
+// Pass to input of pre-demodulation filter
 
 float const DC_alpha = 0.00001;    // high pass filter coefficient for DC offset estimates, per sample
 float const Power_alpha = 0.00001; // high pass filter coefficient for power and I/Q imbalance estimates, per sample
@@ -182,8 +187,7 @@ void *proc_samples(void *arg){
 // This formula is hacked down from code from Howard Long; it's what he uses in the firmware so I can figure out
 // the *actual* frequency. Of course, we still have to correct it for the TCXO offset.
 
-// This needs to be made modular since other tuners will be completely different!
-
+// This needs to be generalized since other tuners will be completely different!
 double fcd_actual(unsigned int u32Freq){
   typedef unsigned int UINT32;
   typedef unsigned long long UINT64;
@@ -246,7 +250,7 @@ double fcd_actual(unsigned int u32Freq){
 
 
 
-// Get true first LO frequency
+// Get true first LO frequency, with TCXO offset applied
 double const get_first_LO(const struct demod * const demod){
   if(demod == NULL)
     return NAN;
@@ -255,6 +259,7 @@ double const get_first_LO(const struct demod * const demod){
 }
 
 
+// Return second (software) local oscillator frequency
 double get_second_LO(struct demod * const demod){
   if(demod == NULL)
     return NAN;
@@ -264,14 +269,14 @@ double get_second_LO(struct demod * const demod){
   return f;
 }
 
-// Return actual frequency, as opposed to desired (in demod->freq)
+// Return actual radio frequency
 double get_freq(struct demod * const demod){
   if(demod == NULL)
     return NAN;
-  //  return get_first_LO(demod) - get_second_LO(demod);
   return demod->freq;
 }
 
+// Set a Doppler offset and sweep rate
 int set_doppler(struct demod * const demod,double freq,double rate){
   pthread_mutex_lock(&demod->doppler_mutex);
   demod->doppler = freq;
@@ -296,12 +301,8 @@ double get_doppler_rate(struct demod * const demod){
   return f;
 }
 
-
-
-
-// Set radio frequency with optional IF selection
-// new_lo2 is explicitly allowed to be NAN. If it is, that's a "don't care"
-// and we'll try to pick a new LO2 that avoids retuning LO1.
+// Set receiver frequency with optional first IF selection
+// new_lo2 == NAN is a "don't care"; we'll try to pick a new LO2 that avoids retuning LO1.
 // If that isn't possible we'll pick a default, (usually +/- 48 kHz, samprate/4)
 // that moves the tuner the least
 double set_freq(struct demod * const demod,double const f,double new_lo2){
@@ -344,13 +345,10 @@ double set_freq(struct demod * const demod,double const f,double new_lo2){
   return f;
 }
 
-// Preferred A/D sample rate; ignored by funcube but may be used by others someday
-const int ADC_samprate = 192000;
-
-// Set tuner LO
+// Set first (front end tuner) oscillator
 // Note: single precision floating point is not accurate enough at VHF and above
-// demod->first_LO isn't updated here, but by the
-// incoming status frames so it don't change right away
+// demod->first_LO is NOT updated here!
+// It is set by incoming status frames so this will take time
 double set_first_LO(struct demod * const demod,double first_LO){
   if(demod == NULL)
     return NAN;
@@ -364,7 +362,11 @@ double set_first_LO(struct demod * const demod,double first_LO){
   // Set tuner to integer nearest requested frequency after decalibration
   demod->requested_status.frequency = round(first_LO / (1 + demod->calibrate)); // What we send to the tuner
   demod->requested_status.frequency = Raster * round(demod->requested_status.frequency / Raster);
+
   // These need a way to set
+  // The Funcube dongle has a very wide dynamic range, so it is rarely necessary
+  // to change its analog gain settings and the 'radio' program never does
+  // Right now, gain is only changed inside the 'funcube' program in response to actual A/D overload, which is rare
   demod->requested_status.samprate = ADC_samprate; // Preferred samprate; ignored by funcube
   demod->requested_status.lna_gain = 0xff;    // 0xff means "don't change"
   demod->requested_status.mixer_gain = 0xff;
@@ -424,7 +426,7 @@ double set_second_LO(struct demod * const demod,double const second_LO){
   return second_LO;
 }
 
-// Set audio shift after downconversion and detection (linear modes only: SSB, IQ, DSB)
+// Set audio frequency shift after downconversion and detection (linear modes only: SSB, IQ, DSB)
 double set_shift(struct demod * const demod,double const shift){
   demod->shift = shift;
   if(demod->samprate != 0)
@@ -434,7 +436,9 @@ double set_shift(struct demod * const demod,double const shift){
   return shift;
 }
 
-
+// Set major operating mode
+// This kills the current demodulator thread, sets up the predetection filter
+// and other demodulator parameters, and starts the appropriate demodulator thread
 int set_mode(struct demod * const demod,const char * const mode,int const defaults){
   if(demod == NULL)
     return -1;
@@ -518,7 +522,7 @@ int set_cal(struct demod * const demod,double const cal){
   return 0;
 }
 
-// Called from network packet receiver to process incoming metadata from SDR
+// Called from RTP receiver to process incoming metadata from SDR front end
 void update_status(struct demod *demod,struct status *new_status){
       // Protect status with a mutex and signal a condition when it changes
       // since demod threads will be waiting for this
@@ -603,9 +607,8 @@ float const compute_n0(struct demod const * const demod){
   
   // Compute smoothed power spectrum
   // There will be some spectral leakage because the convolution FFT we're using is unwindowed
-  for(int n=0;n<N;n++){
+  for(int n=0;n<N;n++)
     power_spectrum[n] = cnrmf(f->fdomain[n]);
-  }  
 
   // compute average energy outside passband, then iterate computing a new average that
   // omits bins > 3dB above the previous average. This should pick up only the noise
