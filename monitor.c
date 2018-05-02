@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.66 2018/04/23 09:57:00 karn Exp $
+// $Id: monitor.c,v 1.67 2018/05/02 01:26:01 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -330,8 +330,8 @@ int main(int argc,char * const argv[]){
 	pkt->len -= dp[pkt->len-1];
 	pkt->rtp.pad = 0;
       }
-
-      assert(pkt->len > 0);
+      if(pkt->len <= 0)
+	continue; // Used to be an assert, but would be triggered by bogus packets
 
       // Find appropriate session; create new one if necessary
       struct session *sp = lookup_session(&sender,pkt->rtp.ssrc);

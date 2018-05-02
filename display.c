@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.122 2018/04/23 09:52:31 karn Exp $
+// $Id: display.c,v 1.123 2018/05/02 01:27:50 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -145,29 +145,20 @@ void adjust_item(struct demod *demod,int direction){
     if(fabs(tunestep) < 1)
       break; // First LO can't make steps < 1  Hz
     
-    if(demod->tuner_lock) // Tuner is locked
+    if(demod->tuner_lock) // Tuner is locked, don't change it
       break;
 
-    if(Frequency_lock){
-      // Keep frequency but move LO2 in opposite direction, which will move LO1
-      double new_lo2 = demod->second_LO + tunestep;
-      if(LO2_in_range(demod,new_lo2,0))
-	set_freq(demod,get_freq(demod),new_lo2);
-    } else {
-      // Retune radio but keep IF the same
-      set_freq(demod,get_freq(demod) + tunestep,demod->second_LO);
-    }
+    // Keep frequency but move LO2, which will move LO1
+    double new_lo2 = demod->second_LO + tunestep;
+    if(LO2_in_range(demod,new_lo2,0))
+      set_freq(demod,get_freq(demod),new_lo2);
     break;
   case 3: // IF
     {
       double new_lo2 = demod->second_LO - tunestep;
       if(LO2_in_range(demod,new_lo2,0)){ // Ignore if out of range
-	if(Frequency_lock){
-	  set_freq(demod,get_freq(demod),new_lo2);
-	} else {
-	  // Vary RF and IF together to keep LO1 the same
-	  set_freq(demod,get_freq(demod) + tunestep,new_lo2);
-	}
+	// Vary RF and LO2 (IF) together to keep LO1 the same
+	set_freq(demod,get_freq(demod) + tunestep,new_lo2);
       }
     }
     break;
