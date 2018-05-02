@@ -1,4 +1,4 @@
-// $Id: radio.c,v 1.85 2018/04/22 18:05:02 karn Exp $
+// $Id: radio.c,v 1.86 2018/05/02 01:27:50 karn Exp $
 // Core of 'radio' program - control LOs, set frequency/mode, etc
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -321,7 +321,6 @@ double set_freq(struct demod * const demod,double const f,double new_lo2){
   if(isnan(new_lo2) || !LO2_in_range(demod,new_lo2,0)){
     // Determine new LO2
     new_lo2 = -(f - get_first_LO(demod));
-
     // If the required new LO2 is out of range, retune LO1
     if(!LO2_in_range(demod,new_lo2,1)){
       // Pick new LO2 to minimize change in LO1 in case another receiver is using it
@@ -330,15 +329,15 @@ double set_freq(struct demod * const demod,double const f,double new_lo2){
 
       if(fabs(f + new_lo2 - LO1) > fabs(f - new_lo2 - LO1))
 	new_lo2 = -new_lo2;
-      double new_lo1 = f + new_lo2;
-      // returns actual frequency, which may be different from requested because
-      // of calibration offset and quantization error in the fractional-N synthesizer
-      double actual_lo1 = set_first_LO(demod,new_lo1);
-      new_lo2 += (actual_lo1 - new_lo1); // fold the difference into LO2
     }
   }
+  double new_lo1 = f + new_lo2;
+  // returns actual frequency, which may be different from requested because
+  // of calibration offset and quantization error in the fractional-N synthesizer
+  double actual_lo1 = set_first_LO(demod,new_lo1);
+  new_lo2 += (actual_lo1 - new_lo1); // fold the difference into LO2
     
-  //   // If front end doesn't retune don't retune LO2 either (e.g., when receiving from a recording)
+  // If front end doesn't retune don't retune LO2 either (e.g., when receiving from a recording)
   if(LO2_in_range(demod,new_lo2,0))
     set_second_LO(demod,new_lo2);
 
