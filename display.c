@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.123 2018/05/02 01:27:50 karn Exp $
+// $Id: display.c,v 1.123 2018/05/02 01:27:50 karn Exp karn $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -475,7 +475,7 @@ void *display(void *arg){
 	if(r.modes & VOICE)
 	  waddstr(info,"Voice ");
 	if(r.modes & IMAGE)
-	  waddstr(info,"Image");
+	  waddstr(info,"Image ");
 	if(r.modes & DATA)
 	  waddstr(info,"Data ");
 	if(r.modes & CW)
