@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.17 2018/04/23 09:54:38 karn Exp $
+// $Id: multicast.c,v 1.18 2018/06/07 17:03:21 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -133,24 +133,14 @@ int setup_mcast(char const *target,int output){
 
 #if 0 // testing hack - find out if we're using source specific multicast (we're not)
   {
-  struct in_addr interface,group;
-  uint32_t fmode;
-  uint32_t numsrc;
-  struct in_addr slist[100];
+  uint32_t fmode  = MCAST_INCLUDE;
+  uint32_t numsrc = 100;
+  struct sockaddr_storage slist[100];
+
   int n;
-
-  struct sockaddr_in const *sin = (struct sockaddr_in *)resp->ai_addr;
-
-  
-  interface.s_addr = htonl(0xc0a82c07);
-  group = sin->sin_addr;
-  fmode = MCAST_INCLUDE;
-  numsrc = 100;
-  printf("fd = %d\n",fd);
-
-  n = getipv4sourcefilter(fd,interface,group,&fmode,&numsrc,slist);
+  n = getsourcefilter(fd,0,resp->ai_addr,resp->ai_addrlen,&fmode,&numsrc,slist);
   if(n < 0)
-    perror("getipv4sourcefilter");
+    perror("getsourcefilter");
   printf("n = %d numsrc = %d\n",n,numsrc);
   }
 #endif

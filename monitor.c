@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.67 2018/05/02 01:26:01 karn Exp $
+// $Id: monitor.c,v 1.68 2018/06/07 17:04:06 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -705,7 +705,7 @@ void *display(void *arg){
     doupdate();
     if(!Current){
       usleep(1000*Update_interval); // No getch() to slow us down!
-	continue;
+      continue;
     }
     // process commands only if there's something to act on
     int c = getch(); // Pauses here
@@ -739,6 +739,10 @@ void *display(void *arg){
     case 'r':
       // Reset playout queue
       Current->wptr = Current->rptr;
+      // Reset counters
+      Current->packets = 0;
+      Current->rtp_state.dupes = 0;
+      Current->rtp_state.drops = 0;
       break;
     break;
     case 'd':
