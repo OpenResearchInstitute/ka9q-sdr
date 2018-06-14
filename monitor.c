@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.68 2018/06/07 17:04:06 karn Exp $
+// $Id: monitor.c,v 1.69 2018/06/14 00:50:13 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -670,6 +670,8 @@ void *display(void *arg){
 	wprintw(Mainscr," dupes %lu",sp->rtp_state.dupes);
       if(sp->rtp_state.drops)
 	wprintw(Mainscr," drops %lu",sp->rtp_state.drops);
+      if(sp->rtp_state.resyncs)
+	wprintw(Mainscr," resyncs %lu",sp->rtp_state.resyncs);
       
       if(queue != 0)
 	mvwchgat(Mainscr,row,40,5,A_BOLD,0,NULL);
@@ -742,6 +744,7 @@ void *display(void *arg){
       // Reset counters
       Current->packets = 0;
       Current->rtp_state.dupes = 0;
+      Current->rtp_state.resyncs = 0;
       Current->rtp_state.drops = 0;
       break;
     break;

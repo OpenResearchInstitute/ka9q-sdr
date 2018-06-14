@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.123 2018/05/02 01:27:50 karn Exp karn $
+// $Id: display.c,v 1.126 2018/06/14 00:50:13 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -304,11 +304,9 @@ void decrement(void){
 // Thread to display receiver state, updated at 10Hz by default
 // Uses the ancient ncurses text windowing library
 // Also services keyboard, mouse and tuning knob, if present
+// I had been running this at normal priority, but it can start new demodulators
+// so it must also run at preferred priority
 void *display(void *arg){
-  // Drop priority back to normal; the display isn't as critical as the stuff handling signals
-  // (Remember Apollo 11's 1201/1202 alarms!)
-  setpriority(PRIO_PROCESS,0,0);
-
   pthread_setname("display");
   assert(arg != NULL);
   struct demod * const demod = arg;
@@ -703,6 +701,8 @@ void *display(void *arg){
       wprintw(network," drops %'llu",demod->rtp_state.drops);
     if(demod->rtp_state.dupes)
       wprintw(network," dupes %'llu",demod->rtp_state.dupes);
+    if(demod->rtp_state.resyncs)
+      wprintw(network," resyncs %'llu",demod->rtp_state.resyncs);      
 
     mvwprintw(network,row++,col,"Time: %s",lltime(demod->status.timestamp));
     mvwprintw(network,row++,col,"Sink: %s; ssrc %8x; TTL %d%s",audio->audio_mcast_address_text,

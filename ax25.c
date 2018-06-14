@@ -1,4 +1,4 @@
-// $Id: ax25.c,v 1.3 2018/06/08 06:58:07 karn Exp $
+// $Id: ax25.c,v 1.4 2018/06/10 06:36:34 karn Exp $
 // AX.25 frame header decoding (this takes me wayyyyy back)
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -163,4 +163,49 @@ int decode_base91(char *in){
   for(int i=0;i<4;i++)
     result = 91 * result + in[i] - 33;
   return result;
+}
+
+// Break an incoming AX.25 frame into its parts
+int ax25_parse(struct ax25_frame *out,unsigned char *in,int len){
+  if(len < 16) // Frame length NOT including CRC
+    return -1; // Too short
+
+  // Find end of address field
+  int ctl_offs;
+  for(ctl_offs=0; ctl_offs<len; ctl_offs++){
+    if(in[ctl_offs] & 1)
+      break;
+  }
+  if(ctl_offs == len)
+    return -1; // Can't find end of address field!
+
+  ctl_offs++;
+  // Determine number of digipeaters
+  if((ctl_offs % 7) != 0)
+    return -1; // Addresses must be multiples of 7 bytes long
+
+  out->ndigi = (ctl_offs / 7) - 2;
+
+  get_callsign(out->source,in+7);
+  get_callsign(out->dest,in+0);
+
+  // Process digipeaters, if any
+  for(int i=0; i<out->ndigi; i++){
+    if(i >= MAX_DIGI)
+      return -1; // too many!
+    get_callsign(out->digipeaters[i].name,in+7*(2+i));
+    if(in[7*(2+i)+6] & 0x80)
+      out->digipeaters[i].h = 1;
+    else
+      out->digipeaters[i].h = 0;      
+  }
+  out->control = in[ctl_offs];
+  out->type = in[ctl_offs+1];
+  out->info_len = len - (ctl_offs+2);
+
+  if(out->info_len > sizeof(out->information))
+    return -1;
+
+  memcpy(out->information,in+ctl_offs+2,out->info_len);
+  return 0;
 }

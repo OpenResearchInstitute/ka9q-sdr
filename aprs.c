@@ -1,4 +1,4 @@
-// $Id: aprs.c,v 1.7 2018/04/23 09:51:53 karn Exp $
+// $Id: aprs.c,v 1.8 2018/06/10 06:36:34 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
 // INCOMPLETE, doesn't yet drive antenna rotors
 // Should also use RTP for AX.25 frames
@@ -139,28 +139,30 @@ int main(int argc,char *argv[]){
   unsigned char packet[2048];
   int len;
 
-  while((len = recv(Input_fd,packet,sizeof(packet),0)) > 0){
-    time_t t;
-    struct tm *tmp;
-    time(&t);
-    tmp = gmtime(&t);
-    printf("%d %s %04d %02d:%02d:%02d UTC: ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
-	   tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
-		
+  setlinebuf(stdout);
 
+  while((len = recv(Input_fd,packet,sizeof(packet),0)) > 0){
     //    dump_frame(packet,len);
     // Is this the droid we're looking for?
-    char result[10];
+    char source_call[10];
 
-    get_callsign(result,packet+7);
-    printf("source = %s\n",result);
-    if(All || strncasecmp(result,Source,sizeof(result)) == 0){
+    memset(source_call,0,sizeof(source_call));
+    get_callsign(source_call,packet+7);
+
+    if(All || strncasecmp(source_call,Source,sizeof(source_call)) == 0){
       // Find end of address field
       int i;
       for(i = 0; i < len;i++){
 	if(packet[i] & 1)
 	  break;
       }
+      time_t t;
+      struct tm *tmp;
+      time(&t);
+      tmp = gmtime(&t);
+      printf("%d %s %04d %02d:%02d:%02d UTC: ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
+	     tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
+
       if(i == len){
 	// Invalid
 	printf("Incomplete frame\n");
@@ -288,7 +290,7 @@ int main(int argc,char *argv[]){
       double azimuth = M_PI - atan2(east,south);
 
 
-      printf("azimuth %.1lf deg, elevation %.1lf deg, range %.1lf m\n",
+      printf("azimuth %.1lf deg, elevation %.1lf deg, range %.1lf m\n\n",
 	     azimuth*DEGPRA, elevation*DEGPRA,range);
 
     }
