@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.110 2018/04/23 09:56:32 karn Exp $
+// $Id: main.c,v 1.111 2018/06/10 06:35:43 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -271,12 +271,13 @@ int main(int argc,char *argv[]){
   signal(SIGPIPE,SIG_IGN);
 
   // Become the display thread unless quiet; then just twiddle our thumbs
+  pthread_t display_thread;
   if(!Quiet){
-    display(demod);
-  } else {
-    while(1)
-      usleep(1000000); // probably get rid of this
+    pthread_create(&display_thread,NULL,display,demod);
   }
+  while(1)
+    usleep(1000000); // probably get rid of this
+
   exit(0);
 }
 

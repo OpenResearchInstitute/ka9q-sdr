@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.17 2018/04/23 09:54:38 karn Exp $
+// $Id: multicast.c,v 1.19 2018/06/14 00:50:13 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -133,24 +133,14 @@ int setup_mcast(char const *target,int output){
 
 #if 0 // testing hack - find out if we're using source specific multicast (we're not)
   {
-  struct in_addr interface,group;
-  uint32_t fmode;
-  uint32_t numsrc;
-  struct in_addr slist[100];
+  uint32_t fmode  = MCAST_INCLUDE;
+  uint32_t numsrc = 100;
+  struct sockaddr_storage slist[100];
+
   int n;
-
-  struct sockaddr_in const *sin = (struct sockaddr_in *)resp->ai_addr;
-
-  
-  interface.s_addr = htonl(0xc0a82c07);
-  group = sin->sin_addr;
-  fmode = MCAST_INCLUDE;
-  numsrc = 100;
-  printf("fd = %d\n",fd);
-
-  n = getipv4sourcefilter(fd,interface,group,&fmode,&numsrc,slist);
+  n = getsourcefilter(fd,0,resp->ai_addr,resp->ai_addrlen,&fmode,&numsrc,slist);
   if(n < 0)
-    perror("getipv4sourcefilter");
+    perror("getsourcefilter");
   printf("n = %d numsrc = %d\n",n,numsrc);
   }
 #endif
@@ -258,7 +248,7 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
   // Sequence number check
   short seq_step = (short)(rtp->seq - state->expected_seq);
   if(seq_step < 0 || seq_step > 10){
-    if(++state->reseq < 3){ // Look for three consecutive out-of-sequence packets
+    if(++state->seq_err < 3){ // Look for three consecutive out-of-sequence packets
       if(seq_step > 0)
 	state->drops++;	  
       else if(seq_step < 0)
@@ -266,7 +256,9 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
       return -1;
     }
     // Three invalid sequence numbers in a row; probably a restarted stream so accept this sequence number
-    state->reseq = 0;
+    state->seq_err = 0;
+    state->drops = state->dupes = 0; // Not really meaningful after a resync
+    state->resyncs++;
   }
   state->expected_seq = rtp->seq + 1;
 
