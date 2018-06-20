@@ -14,6 +14,13 @@ The ka9q-radio modules execute from the command line on either Linux
 or OSX.  As yet there is no fancy graphical user interface. (This may
 come later, especially if someone volunteers to create one).
 
+## License
+The License for this software is GPL3, as detailed [here](LICENSE).
+
+
+## Installation
+Installation instructions are [here](INSTALLING.md).
+
 ## Multicasting and the Real Time Protocol (RTP)
 
 The ka9q-radio modules are designed for maximum versatility.  Unlike
