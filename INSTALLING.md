@@ -21,20 +21,23 @@ usually needed to compile C programs (e.g., make, gcc).
 On Raspbian, Debian or Ubuntu Linux, run the following command (as root):
 
 ```
-apt install libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev libasound2-dev libncursesw5-dev libattr1-dev portaudio19-dev libncurses5-dev
+apt install build-essential libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev \
+    libasound2-dev libncursesw5-dev libattr1-dev portaudio19-dev libncurses5-dev
 ```
+This is know to work on Ubuntu 18.04 LTS and Debian 9 (Stretch). It will *not* work 
+with Ubuntu 14.04 LTS, Ubuntu 16.04 LTS or Debian 8 (Jessie). The reason is that 
+ka9q-sdr requires at least version 3.3.5 of libfftw3-dev, and these distributions 
+use an older version. The symptom here is that at link-time, the symbol 
+`fftwf_make_planner_thread_safe()` is missing.
 
-Some versions of Ubuntu have an older version of libfftw3-dev that lacks full
-thread safety. The symptom here is the missing link-time symbol
-```
-fftwf_make_planner_thread_safe()
-```
+As a workaround, you can install and build it from the upstream 
+source at http://www.fftw.org/fftw-3.3.8.tar.gz (Thanks PY2SDR)
 
-If necessary, you can install and build it from the upstream source at
+Additionally, compiles on Ubuntu 14.04 LTS fail, because it ships with
+a version of gcc (4.8) that does not support the include file
+`stdatomic.h`.
 
-   http://www.fftw.org/fftw-3.3.7.tar.gz
-
-(Thanks PY2SDR)
+We are working on better build instructions that reflect these issues.
 
 ## macOS
 
@@ -47,7 +50,7 @@ Then run, as root:
 port install fftw-3 libopus portaudio
 ```
 
-I haven't set up virgin systems to test the installs so I could easily have missed something. If so, please let me know.
+I haven't set up virgin systems to test the installs so I could easily have missed something. If so, please let me know or file an issue.
 
 Phil Karn
 
