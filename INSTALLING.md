@@ -24,7 +24,7 @@ On Raspbian, Debian or Ubuntu Linux, run the following command (as root):
 apt install build-essential libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev \
     libasound2-dev libncursesw5-dev libattr1-dev portaudio19-dev libncurses5-dev
 ```
-This is know to work on Ubuntu 18.04 LTS and Debian 9 (Stretch). It will *not* work 
+This is known to work on Ubuntu 18.04 LTS and Debian 9 (Stretch). It will *not* work 
 with Ubuntu 14.04 LTS, Ubuntu 16.04 LTS or Debian 8 (Jessie). The reason is that 
 ka9q-sdr requires at least version 3.3.5 of libfftw3-dev, and these distributions 
 use an older version. The symptom here is that at link-time, the symbol 
