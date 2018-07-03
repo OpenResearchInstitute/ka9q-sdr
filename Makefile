@@ -17,7 +17,7 @@ install: all
 	install -D --target-directory=$(LIBDIR) $(AFILES)
 
 clean:
-	rm -f *.o *.a $(EXECS) $(AFILES)
+	rm -f *.o *.a $(EXECS)
 
 .PHONY: clean all
 
