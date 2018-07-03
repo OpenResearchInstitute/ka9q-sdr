@@ -1,0 +1,22 @@
+# editor debris
+*~
+.#*
+._*
+.*.sw?
+# OS debris
+.DS_Store
+# things are built in the same dir
+*.o
+*.a
+aprs
+aprsfeed
+iqrecord
+opus
+iqplay
+funcube
+monitor
+modulate
+packet
+radio
+pcmsend
+opussend
