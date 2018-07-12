@@ -1,33 +1,26 @@
-// $Id: audio.c,v 1.69 2018/04/22 18:23:14 karn Exp $
+// $Id: audio.c,v 1.71 2018/07/06 06:06:12 karn Exp $
 // Audio multicast routines for KA9Q SDR receiver
 // Handles linear 16-bit PCM, mono and stereo
 // Copyright 2017 Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
 #include <assert.h>
-#include <pthread.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <limits.h>
 #include <string.h>
-#include <time.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "misc.h"
-#include "audio.h"
 #include "multicast.h"
+#include "radio.h"
 
 #define PCM_BUFSIZE 480        // 16-bit word count; must fit in Ethernet MTU
+#define PACKETSIZE 2048        // Somewhat larger than Ethernet MTU
 
 uint16_t Rtp_seq = 0;
 uint32_t Ssrc;
 uint32_t Timestamp;
-
-
 
 static short const scaleclip(float const x){
   if(x >= 1.0)
@@ -68,7 +61,7 @@ int send_stereo_audio(struct audio * const audio,float const * buffer,int size){
       } else
 	rtp.marker = 0;
       rtp.seq = Rtp_seq++;
-      unsigned char packet[2048],*dp;
+      unsigned char packet[PACKETSIZE],*dp;
       dp = packet;
 
       dp = hton_rtp(dp,&rtp);
@@ -117,7 +110,7 @@ int send_mono_audio(struct audio * const audio,float const * buffer,int size){
       } else
 	rtp.marker = 0;
       rtp.seq = Rtp_seq++;
-      unsigned char packet[2048];
+      unsigned char packet[PACKETSIZE];
       unsigned char *dp = packet;
 
       dp = hton_rtp(dp,&rtp);

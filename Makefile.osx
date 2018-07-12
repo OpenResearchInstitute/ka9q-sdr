@@ -1,12 +1,9 @@
-# $Id: Makefile.osx,v 1.42 2018/06/10 06:45:31 karn Exp $
-#CC=g++
-GCC=g++
-#COPTS=-g -O2 -std=gnu11 -pthread -Wall -funsafe-math-optimizations
-CFLAGS=-g -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
+# $Id: Makefile.osx,v 1.49 2018/07/12 00:52:24 karn Exp $
+CFLAGS=-g -O3 -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
 LD_FLAGS=-lpthread -lm
-EXECS=aprs iqplay iqrecord modulate monitor opus opussend packet radio pcmsend aprsfeed
+EXECS=aprs iqplay iqrecord modulate monitor opus opussend packet radio pcmsend aprsfeed hackrf
 AFILES=bandplan.txt help.txt modes.txt
 
 all: $(EXECS) $(AFILES)
@@ -18,17 +15,20 @@ install: all
 	install $(AFILES) $(LIBDIR)
 
 clean:
-	rm -f *.o *.a $(EXECS) $(AFILES)
+	rm -f *.o *.a $(EXECS)
 	rcsclean
 
 # Executables
 aprs: aprs.o ax25.o libradio.a
 	$(CC) -g -o $@ $^ -lm
 
-aprsfeed: aprsfeed.o ax25.o libradio.a
+aprsfeed: aprsfeed.o libradio.a
 	$(CC) -g -o $@ $^ -lm -lpthread
 
-packet: packet.o libradio.a
+hackrf: hackrf.o libradio.a
+	$(CC) -g -o $@ $^ -lhackrf -lm -lpthread
+
+packet: packet.o ax25.o libradio.a
 	$(CC) -g -o $@ $^ -lfftw3f_threads -lfftw3f -lm -lpthread 
 
 opus: opus.o libradio.a
@@ -40,7 +40,7 @@ opussend: opussend.o libradio.a
 pcmsend: pcmsend.o libradio.a
 	$(CC) -g -o $@ $^ -lportaudio -lm -lpthread
 
-funcube: funcube.o libradio.a libfcd.a
+funcube: funcube.o libradio.a
 	$(CC) -g -o $@ $^ -lasound -lusb-1.0 -lm -lpthread
 
 iqplay: iqplay.o libradio.a
@@ -55,25 +55,24 @@ modulate: modulate.o libradio.a
 monitor: monitor.o libradio.a
 	$(CC) -g -o $@ $^ -lopus -lportaudio -lncurses -lm -lpthread
 
-radio: main.o libradio.a
+radio: main.o am.o audio.o bandplan.o display.o doppler.o fm.o linear.o modes.o radio.o libradio.a
 	$(CC) -g -o $@ $^ -lfftw3f_threads -lfftw3f -lncurses -lm -lpthread
 
 # Binary libraries
 libfcd.a: fcd.o hid-libusb.o
-	ar rv $@ $^
+	ar rv $@ $?
 	ranlib $@
 
-libradio.a: am.o attr.o audio.o ax25.o bandplan.o display.o doppler.o filter.o fm.o linear.o misc.o modes.o multicast.o radio.o
-	ar rv $@ $^
+libradio.a: ax25.o multicast.o decimate.o filter.o attr.o dsp.o misc.o
+	ar rv $@ $?
 	ranlib $@
 
 # Main programs
-aprs.o: aprs.c ax25.h multicast.h misc.h
-aprsfeed.o: aprs.c ax25.h multicast.h misc.h
+aprs.o: aprs.c ax25.h multicast.h misc.h dsp.h
+aprsfeed.o: aprsfeed.c ax25.h multicast.h misc.h
 funcube.o: funcube.c fcd.h fcdhidcmd.h hidapi.h sdr.h radio.h misc.h multicast.h
 iqplay.o: iqplay.c misc.h radio.h sdr.h multicast.h attr.h
 iqrecord.o: iqrecord.c radio.h sdr.h multicast.h attr.h
-main.o: main.c radio.h sdr.h filter.h misc.h audio.h multicast.h
 modulate.o: modulate.c misc.h filter.h radio.h sdr.h
 monitor.o: monitor.c misc.h multicast.h
 opus.o: opus.c misc.h multicast.h
@@ -85,24 +84,26 @@ pcmsend.o: pcmsend.c misc.h multicast.h
 fcd.o: fcd.c fcd.h hidapi.h fcdhidcmd.h
 hid-libusb.o: hid-libusb.c hidapi.h
 
-# Components of libradio.a
-am.o: am.c misc.h filter.h radio.h audio.h sdr.h
+# Components of radio
+main.o: main.c radio.h sdr.h filter.h misc.h  multicast.h
+am.o: am.c misc.h filter.h radio.h  sdr.h
 attr.o: attr.c attr.h
-audio.o: audio.c misc.h audio.h multicast.h
+audio.o: audio.c misc.h  multicast.h
 ax25.o: ax25.c ax25.h
 bandplan.o: bandplan.c bandplan.h
-display.o: display.c radio.h sdr.h audio.h misc.h filter.h bandplan.h multicast.h
+decimate.o: decimate.c decimate.h
+display.o: display.c radio.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h
 doppler.o: doppler.c radio.h sdr.h misc.h
-filter.o: filter.c misc.h filter.h
-fm.o: fm.c misc.h filter.h radio.h sdr.h audio.h
+filter.o: filter.c misc.h filter.h dsp.h
+fm.o: fm.c misc.h filter.h radio.h sdr.h 
+hackrf.o: hackrf.c sdr.h radio.h misc.h multicast.h decimate.h
 knob.o: knob.c misc.h
-linear.o: linear.c misc.h filter.h radio.h sdr.h audio.h
+linear.o: linear.c misc.h filter.h radio.h sdr.h 
 misc.o: misc.c radio.h sdr.h
 modes.o: modes.c radio.h sdr.h misc.h
 multicast.o: multicast.c multicast.h
 packet.o: packet.c filter.h misc.h multicast.h ax25.h
-radio.o: radio.c radio.h sdr.h filter.h misc.h audio.h 
+radio.o: radio.c radio.h sdr.h filter.h misc.h 
 touch.o: touch.c misc.h
-
 
 

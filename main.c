@@ -1,9 +1,10 @@
-// $Id: main.c,v 1.111 2018/06/10 06:35:43 karn Exp $
+// $Id: main.c,v 1.116 2018/07/11 06:57:11 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
 #define _GNU_SOURCE 1
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
 #include <pthread.h>
 #include <string.h>
@@ -16,21 +17,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <locale.h>
-#include <signal.h>
-#include <sys/stat.h>
-#include <sys/select.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-#include <netdb.h>
-#include <errno.h>
+#include <signal.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "multicast.h"
 #include "radio.h"
 #include "filter.h"
-#include "audio.h"
 
 #define MAXPKT 1500 // Maximum bytes of data in incoming I/Q packet
 
@@ -51,6 +47,7 @@ int Verbose = 0;
 char Statepath[PATH_MAX];
 char Locale[256] = "en_US.UTF-8";
 int Update_interval = 100;  // 100 ms between screen updates
+int SDR_correct = 0;
 
 void audio_cleanup(void *);
 
@@ -80,7 +77,8 @@ int main(int argc,char *argv[]){
 
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   // Set up program defaults
   // Some can be overridden by state file or command line args
@@ -123,7 +121,6 @@ int main(int argc,char *argv[]){
   demod->headroom = pow(10.,-15./20); // -15 dB
   strlcpy(audio->audio_mcast_address_text,"pcm.hf.mcast.local",sizeof(audio->audio_mcast_address_text));
   demod->tunestep = 0;  // single digit hertz position
-  demod->calibrate = 0;
   demod->imbalance = 1; // 0 dB
 
   // set invalid to start
@@ -133,7 +130,7 @@ int main(int argc,char *argv[]){
   set_shift(demod,0);
 
   // Find any file argument and load it
-  char optstring[] = "c:d:f:I:k:l:L:m:M:r:R:qs:t:T:u:v";
+  char optstring[] = "cd:f:I:k:l:L:m:M:r:R:qs:t:T:u:v";
   while(getopt(argc,argv,optstring) != EOF)
     ;
   if(argc > optind)
@@ -146,8 +143,8 @@ int main(int argc,char *argv[]){
   int c;
   while((c = getopt(argc,argv,optstring)) != EOF){
     switch(c){
-    case 'c':   // SDR TCXO and A/D clock calibration in parts per million
-      set_cal(demod,1e-6*strtod(optarg,NULL));
+    case 'c':
+      SDR_correct = 1;
       break;
     case 'd':
       demod->doppler_command = optarg;
@@ -202,7 +199,7 @@ int main(int argc,char *argv[]){
       Verbose++;
       break;
     default:
-      fprintf(stderr,"Usage: %s [-c calibrate_ppm] [-d doppler_command] [-f frequency] [-I iq multicast address] [-k kaiser_beta] [-l locale] [-L blocksize] [-m mode] [-M FIRlength] [-q] [-R Audio multicast address] [-s shift offset] [-t threads] [-u update_ms] [-v]\n",argv[0]);
+      fprintf(stderr,"Usage: %s [-d doppler_command] [-f frequency] [-I iq multicast address] [-k kaiser_beta] [-l locale] [-L blocksize] [-m mode] [-M FIRlength] [-q] [-R Audio multicast address] [-s shift offset] [-t threads] [-u update_ms] [-v]\n",argv[0]);
       exit(1);
       break;
     }
@@ -259,7 +256,7 @@ int main(int argc,char *argv[]){
   // These wait until the SDR sample rate is known, so they'll block if the SDR isn't running
   fprintf(stderr,"Waiting for SDR response...\n");
   set_freq(demod,demod->freq,NAN); 
-  demod->gain = dB2voltage(30.); // Empirical starting value
+  demod->gain = dB2voltage(100.0); // Empirical starting value
   set_mode(demod,demod->mode,0); // Don't override with defaults from mode table 
 
   // Graceful signal catch
@@ -326,9 +323,9 @@ void *rtp_recv(void *arg){
       size -= dp[size-1];
       pkt->rtp.pad = 0;
     }
-    if(pkt->rtp.type != IQ_PT)
+    if(pkt->rtp.type != IQ_PT && pkt->rtp.type != IQ_PT8)
       continue; // Wrong type
-
+  
     // Note these are in host byte order, i.e., *little* endian because we don't have to interoperate with anything else
     struct status new_status;
     new_status.timestamp = *(long long *)dp;
@@ -363,39 +360,6 @@ void *rtp_recv(void *arg){
     pthread_mutex_unlock(&demod->qmutex);
   }      
   return NULL;
-}
- 
-// Load calibration factor for specified sending IP
-int loadcal(struct demod *demod){
-  FILE *fp;
-  char pathname[PATH_MAX];
-  snprintf(pathname,sizeof(pathname),"%s/calibrate-%s",Statepath,demod->iq_mcast_address_text);
-
-  if((fp = fopen(pathname,"r")) == NULL){
-    fprintf(stderr,"Can't read calibration file %s\n",pathname);
-    return -1;
-  }
-  double calibrate;
-  if(fscanf(fp,"%lg",&calibrate) == 1){
-    set_cal(demod,calibrate);
-  }
-  fclose(fp);
-  return 0;
-}
-// Save calibration factor for specified mcast group (assumes only one sender)
-int savecal(struct demod *demod){
-  // Dump receiver state to file
-  FILE *fp;
-  char pathname[PATH_MAX];
-  snprintf(pathname,sizeof(pathname),"%s/calibrate-%s",Statepath,demod->iq_mcast_address_text);
-
-  if((fp = fopen(pathname,"w")) == NULL){
-    fprintf(stderr,"Can't write calibration file %s\n",pathname);
-    return -1;
-  }
-  fprintf(fp,"%lg\n",demod->calibrate);
-  fclose(fp);
-  return 0;
 }
 
 

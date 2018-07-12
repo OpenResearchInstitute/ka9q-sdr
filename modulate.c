@@ -1,9 +1,10 @@
-// $Id: modulate.c,v 1.10 2018/04/22 22:44:14 karn Exp $
+// $Id: modulate.c,v 1.12 2018/07/06 06:06:12 karn Exp $
 // Simple I/Q AM modulator - will eventually support other modes
 // Copyright 2017, Phil Karn, KA9Q
+#include <assert.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <math.h>
 #include <complex.h>
 #include <limits.h>
@@ -14,6 +15,7 @@
 #include <sys/resource.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "filter.h"
 #include "radio.h"
 
@@ -32,7 +34,8 @@ int main(int argc,char *argv[]){
 
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   // Set defaults
   double frequency = 48000;
@@ -160,7 +163,11 @@ int main(int argc,char *argv[]){
       output[2*i] = crealf(filter_out->output.c[i]) * SHRT_MAX;
       output[2*i+1] = cimagf(filter_out->output.c[i]) * SHRT_MAX;
     }
-    write(1,output,sizeof(output));
+    int wlen = write(1,output,sizeof(output));
+    if(wlen != sizeof(output)){
+      perror("write");
+      break;
+    }
   }
   delete_filter_input(filter_in);
   delete_filter_output(filter_out);

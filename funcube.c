@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.33 2018/04/11 07:08:18 karn Exp $
+// $Id: funcube.c,v 1.38 2018/07/11 06:56:37 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -27,21 +27,23 @@
 #include "misc.h"
 #include "multicast.h"
 
-void *display(void *arg);
-pthread_t Display_thread;
-
-
 struct sdrstate {
   // Stuff for sending commands
   void *phd;                 // Opaque pointer to type hid_device
 
   struct status status;     // Frequency and gain settings, grouped for transmission in RTP packet
 
+  unsigned int intfreq;              // Nominal (uncorrected) tuner frequency
+
   // Analog gain settings
   int agc_holdoff;
   int agc_holdoff_count;
 
-  float power;              // Running estimate of signal power - used only by display
+  float in_power;              // Running estimate of signal power - used only by display
+  // Smoothed error estimates
+  complex float DC;      // DC offset
+  float sinphi;          // I/Q phase error
+  float imbalance;       // Ratio of I power to Q power
 
   // ALSA parameters
   snd_pcm_t *sdr_handle;     // ALSA handle
@@ -50,12 +52,13 @@ struct sdrstate {
   int overrun;               // A/D overrun count
 };
 
-struct sdrstate FCD;
-pthread_t FCD_control_thread;
 int ADC_samprate = 192000;
+float const SCALE16 = 1./32767.;
 int Verbose;
 int No_hold_open; // if set, close control between commands
 int Dongle;       // Which of several funcube dongles to use
+float const DC_alpha = 1.0e-6;  // high pass filter coefficient for DC offset estimates, per sample
+float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
 
 // A larger blocksize makes more efficient use of each frame, but the receiver generally runs on
 // frames that match the Opus codec: 2.5, 5, 10, 20, 40, 60, 180, 100, 120 ms
@@ -64,16 +67,25 @@ int Dongle;       // Which of several funcube dongles to use
 int Blocksize = 240;
 int Dongle = 0;
 char *Locale;
+double Calibration = 0;
 
 
 void *fcd_command(void *arg);
 int process_fc_command(char *,int);
 double set_fc_LO(double);
+double fcd_actual(unsigned int u32Freq);
+int front_end_init(int dongle, int samprate,int L);
+int get_adc(short *buffer,const int L);
+void *display(void *arg);
 
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
 int Ctl_sock;
 extern int Mcast_ttl;
-
+struct sdrstate FCD;
+pthread_t FCD_control_thread;
+pthread_t Display_thread;
+pthread_t AGC_thread;
+void *agc(void *arg);
 
 int main(int argc,char *argv[]){
   // if we have root, up our priority and drop privileges
@@ -82,7 +94,8 @@ int main(int argc,char *argv[]){
 
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   char *dest = "239.1.2.1"; // Default for testing
 
@@ -91,8 +104,11 @@ int main(int argc,char *argv[]){
     Locale = "en_US.UTF-8";
 
   int c;
-  while((c = getopt(argc,argv,"d:vp:l:b:oR:T:")) != EOF){
+  while((c = getopt(argc,argv,"c:d:vp:l:b:oR:T:")) != EOF){
     switch(c){
+    case 'c':
+      Calibration = strtod(optarg,NULL) * 1e-6; // Calibration offset in ppm
+      break;
     case 'R':
       dest = optarg;
       break;
@@ -121,6 +137,30 @@ int main(int argc,char *argv[]){
 
   setlocale(LC_ALL,Locale);
   
+  // Load/save calibration file
+  {
+    char *calfilename = NULL;
+    
+    if(asprintf(&calfilename,"%s/.radiostate/cal-funcube-%d",getenv("HOME"),Dongle) > 0){
+      FILE *calfp = NULL;
+      if(Calibration == 0){
+	if((calfp = fopen(calfilename,"r")) != NULL){
+	  if(fscanf(calfp,"%lg",&Calibration) < 1){
+	    fprintf(stderr,"Can't read calibration from %s\n",calfilename);
+	  }
+	}
+      } else {
+	if((calfp = fopen(calfilename,"w")) != NULL){
+	  fprintf(calfp,"%.6lg",Calibration);
+	}
+      }
+      if(calfp)
+	fclose(calfp);
+      free(calfilename);
+    }
+  }
+  
+
   // Set up RTP output socket
   Rtp_sock = setup_mcast(dest,1);
   if(Rtp_sock == -1){
@@ -167,12 +207,17 @@ int main(int argc,char *argv[]){
 
   int timestamp = 0;
   int seq = 0;
-  int gaindelay = 0;
-
+  // Gain and phase corrections. These will be updated every block
+  float gain_q = 1;
+  float gain_i = 1;
+  float secphi = 1;
+  float tanphi = 0;
   struct timeval tp;
   gettimeofday(&tp,NULL);
   // Timestamp is in nanoseconds for futureproofing, but time of day is only available in microsec
   FCD.status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
+
+  pthread_create(&AGC_thread,NULL,agc,NULL);
 
   while(1){
     struct rtp_header rtp;
@@ -192,49 +237,38 @@ int main(int argc,char *argv[]){
     get_adc(sampbuf,Blocksize);
     dp += Blocksize * 2 * sizeof(*sampbuf);
 
-#if 1
-    // Crude analog AGC just to keep signal roughly within A/D range
-    // average energy (I+Q) in each sample, current block, **including DC offset**
-    // At low levels, will disagree with demod's IF1 figure, which has the DC removed
-    float sumsq = 0;
-    for(int i=0;i<2*Blocksize;i++)
-      sumsq += (float)sampbuf[i] * sampbuf[i];
+    float i_energy=0, q_energy=0;
+    complex float samp_sum = 0;
+    float dotprod = 0;
+    float rate_factor = Blocksize/(ADC_samprate * Power_alpha);
     
-    FCD.power = sumsq/Blocksize;
-    if(FCD.power > 0.25 * 32767 * 32767){
-      // > -6 dBFS, I think
-      gaindelay--;
+    for(int i=0;i<2*Blocksize;i += 2){
+      complex float samp = CMPLXF(sampbuf[i],sampbuf[i+1]) * SCALE16;
 
-    } else if(FCD.power < 316*316){ // -40 dBFS ?
-      gaindelay++;
+      samp_sum += samp;
+
+      // remove DC offset (which can be fractional)
+      samp -= FCD.DC;
+
+      // Must correct gain and phase before frequency shift
+      // accumulate I and Q energies before gain correction
+      i_energy += crealf(samp) * crealf(samp);
+      q_energy += cimagf(samp) * cimagf(samp);
+    
+      // Balance gains, keeping constant total energy
+      __real__ samp *= gain_i;
+      __imag__ samp *= gain_q;
+    
+      // Accumulate phase error
+      dotprod += crealf(samp) * cimagf(samp);
+
+      // Correct phase
+      __imag__ samp = secphi * cimagf(samp) - tanphi * crealf(samp);
+      
+      sampbuf[i] = round(crealf(samp) * 32767);
+      sampbuf[i+1] = round(cimagf(samp) * 32767);
     }
-    if(abs(gaindelay) > 20){
-      if(FCD.phd == NULL && (FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),Dongle)) == NULL){
-	perror("funcube: can't re-open control port, aborting");
-	abort();
-      }
-      if(gaindelay < 0){
-	// reduce mixer gain first
-	if(FCD.status.mixer_gain == 1){
-	  FCD.status.mixer_gain = 0;
-	  fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&FCD.status.mixer_gain,sizeof(FCD.status.mixer_gain));
-	} else if(FCD.status.lna_gain == 1){
-	  FCD.status.lna_gain = 0;
-	  fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&FCD.status.lna_gain,sizeof(FCD.status.lna_gain));
-	}
-      } else if(gaindelay > 0){
-	// Increase LNA gain first
-	if(FCD.status.lna_gain == 0){
-	  FCD.status.lna_gain = 1;
-	  fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&FCD.status.lna_gain,sizeof(FCD.status.lna_gain));
-	} else if(FCD.status.mixer_gain == 0){
-	  FCD.status.mixer_gain = 1;
-	  fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&FCD.status.mixer_gain,sizeof(FCD.status.mixer_gain));
-	}
-      }
-      gaindelay = 0;
-    }
-#endif
+
 
 
     if(send(Rtp_sock,buffer,dp - buffer,0) == -1){
@@ -257,7 +291,20 @@ int main(int argc,char *argv[]){
 #endif
 
 
-
+    // Update every block
+    // estimates of DC offset, signal powers and phase error
+    FCD.DC += DC_alpha * (samp_sum - Blocksize*FCD.DC);
+    float block_energy = 0.5 * (i_energy + q_energy); // Normalize for complex pairs
+    if(block_energy > 0){ // Avoid divisions by 0, etc
+      FCD.in_power = block_energy/Blocksize; // Average A/D output power per channel  
+      FCD.imbalance += rate_factor * ((i_energy / q_energy) - FCD.imbalance);
+      float dpn = dotprod / block_energy;
+      FCD.sinphi += rate_factor * (dpn - FCD.sinphi);
+      gain_q = sqrtf(0.5 * (1 + FCD.imbalance));
+      gain_i = sqrtf(0.5 * (1 + 1./FCD.imbalance));
+      secphi = 1/sqrtf(1 - FCD.sinphi * FCD.sinphi); // sec(phi) = 1/cos(phi)
+      tanphi = FCD.sinphi * secphi;                     // tan(phi) = sin(phi) * sec(phi) = sin(phi)/cos(phi)
+    }
   }
   // Can't really get here
   close(Rtp_sock);
@@ -294,16 +341,6 @@ int front_end_init(int dongle, int samprate,int L){
     r = -1;
     goto done;
   }
-  // Load current tuner state
-  int intfreq;
-  fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_FREQ_HZ,(unsigned char *)&intfreq,sizeof(intfreq));
-  FCD.status.frequency = intfreq;
-
-  fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_LNA_GAIN,&FCD.status.lna_gain,sizeof(FCD.status.lna_gain));
-  fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_MIXER_GAIN,&FCD.status.mixer_gain,sizeof(FCD.status.mixer_gain));
-  fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_IF_GAIN1,&FCD.status.if_gain,sizeof(FCD.status.if_gain));
-
-
   // Set up sample stream through ALSA subsystem
   if(Verbose)
     fprintf(stderr,"adc_setup(%s): ",FCD.sdr_name);
@@ -432,13 +469,17 @@ void *fcd_command(void *arg){
 	sleep(50000);
 	continue;
       }
+      unsigned char val;
+      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_LNA_GAIN,&val,sizeof(val));
+      FCD.status.lna_gain = val ? 1:0;
 
-      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_LNA_GAIN,&FCD.status.lna_gain,sizeof(FCD.status.lna_gain));
-      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_MIXER_GAIN,&FCD.status.mixer_gain,sizeof(FCD.status.mixer_gain));
-      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_IF_GAIN1,&FCD.status.if_gain,sizeof(FCD.status.if_gain));
-      int intfreq;
-      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_FREQ_HZ,(unsigned char *)&intfreq,sizeof(intfreq));
-      FCD.status.frequency = intfreq;
+      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_MIXER_GAIN,&val,sizeof(val));
+      FCD.status.mixer_gain = val ? 19 : 0;
+
+      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_IF_GAIN1,&val,sizeof(val));
+      FCD.status.if_gain = val;
+      fcdAppGetParam(FCD.phd,FCD_CMD_APP_GET_FREQ_HZ,(unsigned char *)&FCD.intfreq,sizeof(FCD.intfreq));
+      FCD.status.frequency = fcd_actual(FCD.intfreq) * (1 + Calibration);
       goto done;
     } 
     // A command arrived, read it
@@ -466,14 +507,16 @@ void *fcd_command(void *arg){
 #if 0
       fprintf(stderr,"lna %s\n",FCD.status.lna_gain ? "ON" : "OFF");
 #endif
-      fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&FCD.status.lna_gain,sizeof(FCD.status.lna_gain));
+      unsigned char val = FCD.status.lna_gain ? 1 : 0;
+      fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&val,sizeof(val));
     }
     if(requested_status.mixer_gain != 0xff && FCD.status.mixer_gain != requested_status.mixer_gain){
       FCD.status.mixer_gain = requested_status.mixer_gain;
 #if 0
       fprintf(stderr,"mixer %s\n",FCD.status.mixer_gain ? "ON" : "OFF");
 #endif
-      fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&FCD.status.mixer_gain,sizeof(FCD.status.mixer_gain));
+      unsigned char val = FCD.status.mixer_gain ? 1 : 0;
+      fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&val,sizeof(val));
     }
     if(requested_status.if_gain != 0xff && FCD.status.if_gain != requested_status.if_gain){
       FCD.status.if_gain = requested_status.if_gain;
@@ -483,13 +526,13 @@ void *fcd_command(void *arg){
       fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_IF_GAIN1,&FCD.status.if_gain,sizeof(FCD.status.if_gain));
     }
     if(requested_status.frequency > 0 && FCD.status.frequency != requested_status.frequency){
-      int intfreq;
       
 #if 0
       fprintf(stderr,"tuner frequency %lf\n",requested_status.frequency);
 #endif
-      intfreq = FCD.status.frequency = requested_status.frequency;
-      fcdAppSetFreq(FCD.phd,intfreq);
+      FCD.intfreq = round(requested_status.frequency/ (1 + Calibration));
+      fcdAppSetFreq(FCD.phd,FCD.intfreq);
+      FCD.status.frequency = fcd_actual(FCD.intfreq) * (1 + Calibration);
     }
   done:;
     if(No_hold_open && FCD.phd != NULL){
@@ -502,23 +545,32 @@ void *fcd_command(void *arg){
 // Status display thread
 void *display(void *arg){
   pthread_setname("funcube-disp");
-  float powerdB;
 
-  fprintf(stderr,"Frequency      LNA  Mix   IF   A/D\n");
-  fprintf(stderr,"Hz                        dB  dBFS\n");
+  fprintf(stderr,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|           clips\n");
+  fprintf(stderr,"Frequency      LNA  mixer bband          RF   A/D   Out     DC-I   DC-Q  phase  gain                        TCXO\n");
+  fprintf(stderr,"Hz                                           dBFS  dBFS                    deg    dB                         ppm\n");   
 
   while(1){
-    // This is +3dB for both channels carrying a maximum amplitude square wave
-    powerdB = 10*log10f(FCD.power) - 90.309; // voltage ratio of 32768 -> +90.309 dB
+    float powerdB = 10*log10f(FCD.in_power);
 
-    fprintf(stderr,"%'-15.0lf%3d%5d%5d%'6.1f\r",
+    fprintf(stderr,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    %8.4lf\r",
 	    FCD.status.frequency,
-	    FCD.status.lna_gain,
+	    FCD.status.lna_gain,	    
 	    FCD.status.mixer_gain,
 	    FCD.status.if_gain,
-	    powerdB);
-    usleep(100000); // 10 Hz
-  }
+	    powerdB - (FCD.status.lna_gain + FCD.status.mixer_gain + FCD.status.if_gain),
+	    powerdB,
+	    powerdB,
+	    crealf(FCD.DC),
+	    cimagf(FCD.DC),
+	    (180/M_PI) * asin(FCD.sinphi),
+	    10*log10(FCD.imbalance),
+	    0,
+	    Calibration * 1e6
+	    );
+    usleep(100000);
+  }    
+
   return NULL;
 }
 
@@ -531,4 +583,103 @@ void closedown(int a){
     fprintf(stderr,"funcube: caught signal %d: %s\n",a,strsignal(a));
   snd_pcm_drop(FCD.sdr_handle);
   exit(1);
+}
+// The funcube dongle uses the Mirics MSi001 tuner. It has a fractional N synthesizer that can't actually do integer frequency steps.
+// This formula is hacked down from code from Howard Long; it's what he uses in the firmware so I can figure out
+// the *actual* frequency. Of course, we still have to correct it for the TCXO offset.
+
+// This needs to be generalized since other tuners will be completely different!
+double fcd_actual(unsigned int u32Freq){
+  typedef unsigned int UINT32;
+  typedef unsigned long long UINT64;
+
+  const UINT32 u32Thresh = 3250U;
+  const UINT32 u32FRef = 26000000U;
+  double f64FAct;
+  
+  struct
+  {
+    UINT32 u32Freq;
+    UINT32 u32FreqOff;
+    UINT32 u32LODiv;
+  } *pts,ats[]=
+      {
+	{4000000U,130000000U,16U},
+	{8000000U,130000000U,16U},
+	{16000000U,130000000U,16U},
+	{32000000U,130000000U,16U},
+	{75000000U,130000000U,16U},
+	{125000000U,0U,32U},
+	{142000000U,0U,16U},
+	{148000000U,0U,16U},
+	{300000000U,0U,16U},
+	{430000000U,0U,4U},
+	{440000000U,0U,4U},
+	{875000000U,0U,4U},
+	{UINT32_MAX,0U,2U},
+	{0U,0U,0U}
+      };
+  for(pts = ats; u32Freq >= pts->u32Freq; pts++)
+    ;
+
+  if (pts->u32Freq == 0)
+    pts--;
+      
+  // Frequency of synthesizer before divider - can possibly exceed 32 bits, so it's stored in 64
+  UINT64 u64FSynth = ((UINT64)u32Freq + pts->u32FreqOff) * pts->u32LODiv;
+
+  // Integer part of divisor ("INT")
+  UINT32 u32Int = u64FSynth / (u32FRef*4);
+
+  // Subtract integer part to get fractional and AFC parts of divisor ("FRAC" and "AFC")
+  UINT32 u32Frac4096 =  (u64FSynth<<12) * u32Thresh/(u32FRef*4) - (u32Int<<12) * u32Thresh;
+
+  // FRAC is higher 12 bits
+  UINT32 u32Frac = u32Frac4096>>12;
+
+  // AFC is lower 12 bits
+  UINT32 u32AFC = u32Frac4096 - (u32Frac<<12);
+      
+  // Actual tuner frequency, in floating point, given specified parameters
+  f64FAct = (4.0 * u32FRef / (double)pts->u32LODiv) * (u32Int + ((u32Frac * 4096.0 + u32AFC) / (u32Thresh * 4096.))) - pts->u32FreqOff;
+  
+  // double f64step = ( (4.0 * u32FRef) / (pts->u32LODiv * (double)u32Thresh) ) / 4096.0;
+  //      printf("f64step = %'lf, u32LODiv = %'u, u32Frac = %'d, u32AFC = %'d, u32Int = %'d, u32Thresh = %'d, u32FreqOff = %'d, f64FAct = %'lf err = %'lf\n",
+  //	     f64step, pts->u32LODiv, u32Frac, u32AFC, u32Int, u32Thresh, pts->u32FreqOff,f64FAct,f64FAct - u32Freq);
+  return f64FAct;
+}
+
+// Crude analog AGC just to keep signal roughly within A/D range
+// average energy (I+Q) in each sample, current block, **including DC offset**
+// At low levels, will disagree with demod's IF1 figure, which has the DC removed
+
+void *agc(void *arg){
+  while(1){
+    usleep(100000);
+  
+    if(FCD.in_power > 1e-1){ // -20dBFS
+      // reduce mixer gain first
+      if(FCD.status.mixer_gain > 0){
+	FCD.status.mixer_gain = 0;
+	unsigned char val = FCD.status.mixer_gain ? 1 : 0;
+	fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&val,sizeof(val));
+      } else if(FCD.status.lna_gain > 0){
+	FCD.status.lna_gain = 0;
+	unsigned char val = FCD.status.lna_gain ? 1 : 0;
+	fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&val,sizeof(val));
+      }
+    } else if(FCD.in_power < 1e-3){  // -60dBFS
+      // Increase LNA gain first
+      if(FCD.status.lna_gain == 0){
+	FCD.status.lna_gain = 14;
+	unsigned char val = FCD.status.lna_gain ? 1:0;
+	fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&val,sizeof(val));
+      } else if(FCD.status.mixer_gain == 0){
+	FCD.status.mixer_gain = 19;
+	unsigned char val = FCD.status.mixer_gain ? 1 : 0;
+	fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&val,sizeof(val));
+	}
+    }
+  }
+  return NULL;
 }

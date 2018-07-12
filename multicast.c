@@ -1,11 +1,9 @@
-// $Id: multicast.c,v 1.19 2018/06/14 00:50:13 karn Exp $
+// $Id: multicast.c,v 1.22 2018/07/06 06:06:12 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <string.h>
 #if defined(linux)
@@ -239,6 +237,7 @@ unsigned char *hton_rtp(unsigned char *data, struct rtp_header *rtp){
 //           0            if packet is in sequence with no missing timestamps
 //         timestamp jump if packet is in sequence or <10 sequence numbers ahead, with missing timestamps
 int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
+  state->ssrc = rtp->ssrc; // Must be filtered elsewhere if you want it
   state->packets++;
   if(!state->init){
     state->expected_seq = rtp->seq;
@@ -247,19 +246,21 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
   }
   // Sequence number check
   short seq_step = (short)(rtp->seq - state->expected_seq);
-  if(seq_step < 0 || seq_step > 10){
+  if(seq_step != 0){
+    if(seq_step > 0)
+      state->drops++;	  
+    else if(seq_step < 0)
+      state->dupes++;
+
     if(++state->seq_err < 3){ // Look for three consecutive out-of-sequence packets
-      if(seq_step > 0)
-	state->drops++;	  
-      else if(seq_step < 0)
-	state->dupes++;
       return -1;
     }
     // Three invalid sequence numbers in a row; probably a restarted stream so accept this sequence number
-    state->seq_err = 0;
     state->drops = state->dupes = 0; // Not really meaningful after a resync
+    state->expected_timestamp = rtp->timestamp;
     state->resyncs++;
   }
+  state->seq_err = 0;
   state->expected_seq = rtp->seq + 1;
 
   int time_step = (int)(rtp->timestamp - state->expected_timestamp);

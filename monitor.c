@@ -1,27 +1,24 @@
-// $Id: monitor.c,v 1.69 2018/06/14 00:50:13 karn Exp $
+// $Id: monitor.c,v 1.73 2018/07/11 07:00:45 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
-#include <stdatomic.h>
 #include <assert.h>
+#include <errno.h>
+#include <math.h>
 #include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <limits.h>
 #include <string.h>
 #include <opus/opus.h>
 #include <sys/time.h>
-#include <sys/socket.h>
 #include <sys/resource.h>
-#include <sys/select.h>
 #include <netdb.h>
 #include <portaudio.h>
 #include <ncurses.h>
 #include <locale.h>
-#include <errno.h>
+#include <signal.h>
+
 
 #include "misc.h"
 #include "multicast.h"
@@ -99,6 +96,7 @@ struct session *Current;
 
 unsigned long long Samples;
 unsigned long long Callbacks;
+pthread_t Display_task;
 
 
 void cleanup(void){
@@ -139,7 +137,8 @@ int main(int argc,char * const argv[]){
   // Try to improve our priority, then drop root
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 15);
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   setlocale(LC_ALL,getenv("LANG"));
 
@@ -244,7 +243,7 @@ int main(int argc,char * const argv[]){
   outputParameters.channelCount = 2;
   outputParameters.device = inDevNum;
   outputParameters.sampleFormat = paFloat32;
-  outputParameters.suggestedLatency = 0.010; // 0 doesn't seem to be a good value on OSX, lots of underruns and stutters
+  outputParameters.suggestedLatency = 0.020; // 0 doesn't seem to be a good value on OSX, lots of underruns and stutters
   
   r = Pa_OpenStream(&Pa_Stream,
 		    NULL,
@@ -270,10 +269,9 @@ int main(int argc,char * const argv[]){
   signal(SIGHUP,closedown);  
   signal(SIGPIPE,SIG_IGN);
 
-  if(!Quiet){
-    pthread_t display_task;
-    pthread_create(&display_task,NULL,display,NULL);
-  }
+  if(!Quiet)
+    pthread_create(&Display_task,NULL,display,NULL);
+
   struct sockaddr sender;
 
   // Do this at the last minute at startup since the upcall will come quickly
