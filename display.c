@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.131 2018/07/12 00:51:36 karn Exp $
+// $Id: display.c,v 1.131 2018/07/12 00:51:36 karn Exp karn $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -591,7 +591,7 @@ void *display(void *arg){
     mvwprintw(sdr,row,col,"%'18d Hz",demod->status.samprate); // Nominal
     mvwaddstr(sdr,row++,col,"Samprate");
     mvwprintw(sdr,row,col,"%'18.1f dBFS",power2dB(demod->level));
-    mvwprintw(sdr,row++,col,"Level");
+    mvwprintw(sdr,row++,col,"A/D Level");
     if(SDR_correct){
       mvwprintw(sdr,row,col,"%+18.6f",demod->DC_i);  // Scaled to +/-1
       mvwaddstr(sdr,row++,col,"I offset");
@@ -603,7 +603,7 @@ void *display(void *arg){
       mvwaddstr(sdr,row++,col,"I/Q phi");
     }
     mvwprintw(sdr,row,col,"%18u dB",demod->status.lna_gain);   // SDR dependent
-    mvwaddstr(sdr,row++,col,"LNA");
+    mvwaddstr(sdr,row++,col,"LNA gain");
     mvwprintw(sdr,row,col,"%18u dB",demod->status.mixer_gain); // SDR dependent
     mvwaddstr(sdr,row++,col,"Mix gain");
     mvwprintw(sdr,row,col,"%18u dB",demod->status.if_gain); // SDR dependent    
