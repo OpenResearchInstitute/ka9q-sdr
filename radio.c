@@ -1,4 +1,4 @@
-// $Id: radio.c,v 1.95 2018/07/11 06:58:45 karn Exp $
+// $Id: radio.c,v 1.95 2018/07/11 06:58:45 karn Exp karn $
 // Core of 'radio' program - control LOs, set frequency/mode, etc
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -175,35 +175,36 @@ void *proc_samples(void *arg){
       if(in_cnt == demod->filter_in->ilen){
 	// Filter buffer is full, execute it
 	execute_filter_input(demod->filter_in);
-	
-	// Update every fft block
-	// estimates of DC offset, signal powers and phase error
-	float smooth_factor = 1./(demod->samprate * Power_alpha);
-	if(isnan(smooth_factor) || isinf(smooth_factor))
-	  smooth_factor = 1;
-
-	demod->DC_i += DC_alpha * (samp_i_sum - in_cnt * demod->DC_i);
-	demod->DC_q += DC_alpha * (samp_q_sum - in_cnt * demod->DC_q);
 	float block_energy = 0.5 * (samp_i_sq_sum + samp_q_sq_sum); // Scale for two components per complex sample
-	demod->imbalance += smooth_factor * in_cnt * ((samp_i_sq_sum / samp_q_sq_sum) - demod->imbalance);
 	demod->level = block_energy / in_cnt; // Raw A/D level, without analog gain adjustment
 	// gain_factor is a voltage ratio, square to get power ratio
-	demod->if_power = demod->gain_factor * demod->gain_factor * block_energy / in_cnt; // Signal level after gain adjustment
+	demod->if_power = demod->gain_factor * demod->gain_factor * demod->level; // Signal level after gain adjustment
 
-	float dpn = dotprod / block_energy;
-	demod->sinphi += smooth_factor * in_cnt * (dpn - demod->sinphi);
-	gain_q = sqrtf(0.5 * (1 + demod->imbalance));
-	gain_i = sqrtf(0.5 * (1 + 1./demod->imbalance));
-	secphi = 1/sqrtf(1 - demod->sinphi * demod->sinphi); // sec(phi) = 1/cos(phi)
-	tanphi = demod->sinphi * secphi;                     // tan(phi) = sin(phi) * sec(phi) = sin(phi)/cos(phi)
+	if(SDR_correct){
+	  // Update every fft block
+	  // estimates of DC offset, signal powers and phase error
+	  float smooth_factor = in_cnt/(demod->samprate * Power_alpha);
+	  if(isnan(smooth_factor) || isinf(smooth_factor))
+	    smooth_factor = in_cnt;
 
-	// Reset for next block
+	  demod->DC_i += DC_alpha * (samp_i_sum - in_cnt * demod->DC_i);
+	  demod->DC_q += DC_alpha * (samp_q_sum - in_cnt * demod->DC_q);
+	  demod->imbalance += smooth_factor * ((samp_i_sq_sum / samp_q_sq_sum) - demod->imbalance);
+	  float dpn = dotprod / block_energy;
+	  demod->sinphi += smooth_factor * (dpn - demod->sinphi);
+	  gain_q = sqrtf(0.5 * (1 + demod->imbalance));
+	  gain_i = sqrtf(0.5 * (1 + 1./demod->imbalance));
+	  secphi = 1/sqrtf(1 - demod->sinphi * demod->sinphi); // sec(phi) = 1/cos(phi)
+	  tanphi = demod->sinphi * secphi;                     // tan(phi) = sin(phi) * sec(phi) = sin(phi)/cos(phi)
+	  
+	  // Reset for next block
+	  samp_i_sum = 0;
+	  samp_q_sum = 0;
+	  dotprod = 0;
+	}
 	in_cnt = 0;
-	samp_i_sum = 0;
-	samp_q_sum = 0;
 	samp_i_sq_sum = 0;
 	samp_q_sq_sum = 0;
-	dotprod = 0;
 	
 	// Renormalize phasors
 	demod->second_LO_phasor /= cabs(demod->second_LO_phasor); // renormalize every block
