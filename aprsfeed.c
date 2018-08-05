@@ -1,4 +1,4 @@
-// $Id: aprsfeed.c,v 1.6 2018/07/11 07:03:22 karn Exp $
+// $Id: aprsfeed.c,v 1.8 2018/07/31 11:25:32 karn Exp $
 // Process AX.25 frames containing APRS data, feed to APRS2 network
 // Copyright 2018, Phil Karn, KA9Q
 
@@ -19,7 +19,7 @@
 #include "ax25.h"
 #include "misc.h"
 
-char *Mcast_address_text = "ax25.vhf.mcast.local";
+char *Mcast_address_text = "ax25.mcast.local";
 char *Host = "noam.aprs2.net";
 char *Port = "14580";
 char *User;
@@ -73,6 +73,8 @@ int main(int argc,char *argv[]){
   hints.ai_protocol = IPPROTO_TCP;
   hints.ai_flags = AI_CANONNAME|AI_ADDRCONFIG;
 
+  if(Verbose)
+    fprintf(stderr,"APRS server: %s:%s\n",Host,Port);
   struct addrinfo *results = NULL;
   int ecode;
   if((ecode = getaddrinfo(Host,Port,&hints,&results)) != 0){

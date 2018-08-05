@@ -1,4 +1,4 @@
-// $Id: aprs.c,v 1.11 2018/07/11 07:02:06 karn Exp $
+// $Id: aprs.c,v 1.15 2018/07/31 11:25:20 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
 // INCOMPLETE, doesn't yet drive antenna rotors
 // Should also use RTP for AX.25 frames
@@ -24,7 +24,7 @@
 #include "multicast.h"
 #include "ax25.h"
 
-char *Mcast_address_text = "ax25.vhf.mcast.local:8192";
+char *Mcast_address_text = "ax25.mcast.local:5004";
 char *Source = NULL;
 
 double const WGS84_E = 0.081819190842622;  // Eccentricity
@@ -45,14 +45,21 @@ int main(int argc,char *argv[]){
 
 #if 0
   // Use defaults - KA9Q location, be sure to change elsewhere!!
+  // KA9Q
   latitude = 32.8604;
-    longitude = -117.1889;
-    altitude = 0;
+  longitude = -117.1889;
+  altitude = 0;
+#elif 0
+  // MCHSARC
+  latitude = 32.967233;
+  longitude = -117.122382;
+  altitude = 200;
 #else
-    // MCHSARC
-    latitude = 32.967233;
-    longitude = -117.122382;
-    altitude = 200;
+  // UCSD Atkinson Hall
+  latitude = 32.8825852;
+  longitude = -117.2347093;
+  altitude = 144; // estimate
+
 #endif
     
   int c;
@@ -89,8 +96,8 @@ int main(int argc,char *argv[]){
   } else {
     printf("Watching all stations\n");
   }
-  printf("Station coordinates: longitude %.6lf deg; latitude %.6lf deg; altitude %.1lf m\n",
-	 longitude,latitude,altitude);
+  printf("Station coordinates: latitude %.6lf deg; longitude %.6lf deg; altitude %.1lf m\n",
+	 latitude,longitude,altitude);
 
   // Station position in earth-centered ROTATING coordinate system
   double station_x,station_y,station_z;
@@ -279,7 +286,7 @@ char *parse_timestamp(char *data,int *days,int *hours, int *minutes, int *second
     *seconds = t;
     break;
   case 'z':
-    // day, hours minutes zulo
+    // day, hours minutes zulu
     *days = t / 10000;
     t -= *days * 10000;
     *hours = t / 100;

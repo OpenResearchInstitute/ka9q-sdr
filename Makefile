@@ -1,10 +1,11 @@
-# $Id: Makefile,v 1.104 2018/07/08 22:29:51 karn Exp $
+# $Id: Makefile,v 1.111 2018/08/04 22:21:23 karn Exp $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
+#COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
 LDLIBS=-lpthread -lbsd -lm
-EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend radio
+EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend radio 
 AFILES=bandplan.txt help.txt modes.txt
 
 all: $(EXECS) $(AFILES)
@@ -22,7 +23,7 @@ clean:
 aprs: aprs.o ax25.o libradio.a
 aprsfeed: aprsfeed.o libradio.a
 funcube: funcube.o libradio.a libfcd.a
-	$(CC) -g -o $@ $^ -lasound -lusb-1.0 -lbsd -lm -lpthread
+	$(CC) -g -o $@ $^ -lportaudio -lusb-1.0 -lbsd -lm -lpthread
 
 hackrf: hackrf.o libradio.a
 	$(CC) -g -o $@ $^ -lhackrf -lbsd -lpthread -lm
@@ -47,6 +48,8 @@ packet: packet.o ax25.o libradio.a
 pcmsend: pcmsend.o libradio.a
 	$(CC) -g -o $@ $^ -lportaudio -lbsd
 
+
+
 radio: main.o am.o audio.o bandplan.o display.o doppler.o fm.o linear.o modes.o radio.o knob.o touch.o libradio.a
 	$(CC) -g -o $@ $^ -lfftw3f_threads -lfftw3f -lncurses -lbsd -lm -lpthread
 
@@ -70,7 +73,7 @@ modulate.o: modulate.c misc.h filter.h radio.h sdr.h
 monitor.o: monitor.c misc.h multicast.h
 opus.o: opus.c misc.h multicast.h
 opussend.o: opussend.c misc.h multicast.h
-packet.o: packet.c filter.h misc.h multicast.h ax25.h
+packet.o: packet.c filter.h misc.h multicast.h ax25.h dsp.h
 pcmsend.o: pcmsend.c misc.h multicast.h
 
 # Components of libfcd.a

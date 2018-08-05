@@ -1,4 +1,4 @@
-// $Id: misc.h,v 1.6 2018/07/06 06:08:45 karn Exp $
+// $Id: misc.h,v 1.7 2018/08/04 22:19:11 karn Exp $
 // Miscellaneous constants, macros and function prototypes
 // Copyright 2018 Phil Karn, KA9Q
 #ifndef _MISC_H
@@ -30,10 +30,26 @@ extern char *Months[12];
 
 // I *hate* this sort of pointless, stupid, gratuitous incompatibility that
 // makes a lot of code impossible to read and debug
+
+#ifdef __APPLE__
+// OSX doesn't have pthread_barrier_*
+#include <pthread.h>
+
+typedef int pthread_barrierattr_t;
+typedef struct
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int count;
+    int tripCount;
+} pthread_barrier_t;
+int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count);
+int pthread_barrier_destroy(pthread_barrier_t *barrier);
+int pthread_barrier_wait(pthread_barrier_t *barrier);
+
 // The Linux version of pthread_setname_np takes two args, the OSx version only one
 // The GNU malloc_usable_size() does exactly the same thing as the BSD/OSX malloc_size()
 // except that the former is defined in <malloc.h>, the latter is in <malloc/malloc.h>
-#ifdef __APPLE__
 
 #define pthread_setname(x) pthread_setname_np(x)
 #include <malloc/malloc.h>
@@ -44,4 +60,4 @@ extern char *Months[12];
 #endif
 
 
-#endif
+#endif // __APPLE__

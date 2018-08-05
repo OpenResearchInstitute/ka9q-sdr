@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.131 2018/07/12 00:51:36 karn Exp karn $
+// $Id: display.c,v 1.133 2018/08/04 21:06:16 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -677,6 +677,7 @@ void *display(void *arg){
 
 #if ACTUAL_SAMPLE_RATE
     // Estimate actual I/Q sample rate against local time of day clock
+    // Doesn't work very well because local clock is steered with NTP
     struct timeval current_time;
     gettimeofday(&current_time,NULL);
     double interval = current_time.tv_sec - last_time.tv_sec
@@ -697,8 +698,6 @@ void *display(void *arg){
       wprintw(network," drops %'llu",demod->rtp_state.drops);
     if(demod->rtp_state.dupes)
       wprintw(network," dupes %'llu",demod->rtp_state.dupes);
-    if(demod->rtp_state.resyncs)
-      wprintw(network," resyncs %'llu",demod->rtp_state.resyncs);      
 
     mvwprintw(network,row++,col,"Time: %s",lltime(demod->status.timestamp));
     mvwprintw(network,row++,col,"Sink: %s; ssrc %8x; TTL %d%s",audio->audio_mcast_address_text,

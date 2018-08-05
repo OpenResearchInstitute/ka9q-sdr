@@ -1,9 +1,10 @@
-// $Id: monitor.c,v 1.73 2018/07/11 07:00:45 karn Exp $
+// $Id: monitor.c,v 1.77 2018/08/04 21:06:16 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <errno.h>
+#include <complex.h> // test
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -29,25 +30,6 @@
 #define PKTSIZE 16384         // Maximum bytes per RTP packet - must be bigger than Ethernet MTU (including offloaded reassembly)
 #define SAMPPCALLBACK (SAMPRATE/50)     // 20 ms @ 48 kHz
 #define BUFFERSIZE (1<<19)    // about 10.92 sec at 48 kHz stereo - must be power of 2!!
-
-char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
-char Audiodev[256];           // Name of audio device; empty means portaudio's default
-int Update_interval = 100;    // Default time in ms between display updates
-int List_audio;               // List audio output devices and exit
-int Verbose;                  // Verbosity flag (currently unused)
-int Quiet;                    // Disable curses
-int Nfds;                     // Number of streams
-struct session *Session;      // Link to head of session structure chain
-PaStream *Pa_Stream;          // Portaudio stream handle
-int inDevNum;                 // Portaudio's audio output device index
-
-// The portaudio callback continuously plays out this single buffer, into which multiple streams sum their audio
-// and the callback zeroes out each sample as played
-float const SCALE = 1./SHRT_MAX;
-WINDOW *Mainscr;
-
-struct timeval Start_unix_time;
-PaTime Start_pa_time;
 
 // Incoming RTP packets
 struct packet {
@@ -83,7 +65,6 @@ struct session {
   float gain;               // Gain; 1 = 0 dB
   float pan;                // Stereo position: 0 = center; -1 = full left; +1 = full right
 
-
   unsigned long packets;    // RTP packets for this session
   unsigned long empties;    // RTP but no data
 
@@ -92,12 +73,23 @@ struct session {
   int rptr;                        // Read pointer into output buffer
   int terminate;
 };
+
+char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
+char Audiodev[256];           // Name of audio device; empty means portaudio's default
+int Update_interval = 100;    // Default time in ms between display updates
+int List_audio;               // List audio output devices and exit
+int Verbose;                  // Verbosity flag (currently unused)
+int Quiet;                    // Disable curses
+int Nfds;                     // Number of streams
+struct session *Session;      // Link to head of session structure chain
+PaStream *Pa_Stream;          // Portaudio stream handle
+int inDevNum;                 // Portaudio's audio output device index
+float const SCALE = 1./SHRT_MAX;
+WINDOW *Mainscr;
+struct timeval Start_unix_time;
+PaTime Start_pa_time;
 struct session *Current;
-
-unsigned long long Samples;
-unsigned long long Callbacks;
 pthread_t Display_task;
-
 
 void cleanup(void){
   Pa_Terminate();
@@ -131,7 +123,6 @@ static inline int signmod(unsigned int const a){
   assert(y >= -BUFFERSIZE/2 && y < BUFFERSIZE/2);
   return y;
 }
-
 
 int main(int argc,char * const argv[]){
   // Try to improve our priority, then drop root
@@ -266,7 +257,7 @@ int main(int argc,char * const argv[]){
   signal(SIGKILL,closedown);
   signal(SIGQUIT,closedown);
   signal(SIGTERM,closedown);
-  signal(SIGHUP,closedown);  
+  signal(SIGHUP,closedown);
   signal(SIGPIPE,SIG_IGN);
 
   if(!Quiet)
@@ -391,6 +382,7 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
   memset(outputBuffer,0,2 * sizeof(float) * framesPerBuffer); // In case of no active streams
   // Walk through each decoder control block and add its decoded audio into output
   for(struct session *sp=Session; sp; sp=sp->next){
+    __sync_synchronize(); // ensure wptr is current?
     int num = signmod(sp->wptr - sp->rptr);
     if(num <= 0)
       continue;
@@ -409,9 +401,6 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
       sp->rptr = (sp->rptr + 1) & (BUFFERSIZE-1);
     }
   }
-  Samples += framesPerBuffer;
-  Callbacks++;
-
   return paContinue;
 }
 
@@ -448,6 +437,16 @@ void *decode_task(void *arg){
   // Main loop; run until asked to quit
   while(!sp->terminate){
 
+#if 0
+    // Wait until the buffer drains a bit
+    // Give input packet sorting a chance to work on out of sequence packets
+    while(1){
+      __sync_synchronize(); // ensure rptr is current?
+      if(signmod(sp->wptr - sp->rptr) < 960) // 20 ms @ 48 kHz
+	break;
+      usleep(1000); // 1 ms
+    }
+#endif
     struct packet *pkt = NULL;
     // Wait for packet to appear on queue
     pthread_mutex_lock(&sp->qmutex);
@@ -458,46 +457,17 @@ void *decode_task(void *arg){
     pkt->next = NULL;
     pthread_mutex_unlock(&sp->qmutex);
 
-    sp->packets++;
+    sp->packets++; // Count all packets, regardless of type
       
-    // extract these here since frame_size might change (especially with PCM)
-    // and we need it for etimestamp updates
-    switch(pkt->rtp.type){
-    case PCM_STEREO_PT:
-      sp->type = PCM_STEREO_PT;
-      sp->channels = 2;
-      sp->frame_size = pkt->len / 4; // Number of stereo samples
-      break;
-    case PCM_MONO_PT:
-      sp->type = PCM_MONO_PT;
-      sp->channels = 1;
-      sp->frame_size = pkt->len / 2; // Number of stereo samples
-      break;
-    case OPUS_PT:
-    case 20:
-      sp->type = OPUS_PT;
-      sp->channels = opus_packet_get_nb_channels(pkt->data);
-      sp->opus_bandwidth = opus_packet_get_bandwidth(pkt->data);
-      sp->frame_size = opus_packet_get_nb_samples(pkt->data,pkt->len,SAMPRATE);
-      break;
-    }
-    int samples_skipped = rtp_process(&sp->rtp_state,&pkt->rtp,sp->frame_size);
-    if(samples_skipped < 0){
-      free(pkt);
-      pkt = NULL;
-      continue;
-    }
+    int samples_skipped = rtp_process(&sp->rtp_state,&pkt->rtp,0); // get rid of last arg
+    if(samples_skipped < 0)
+      goto done; // old dupe?
 
     // Compute gains and delays for stereo imaging
     // -6dB for each channel in the center
     // when full to one side or the other, that channel is +6 dB and the other is -inf dB
-#if 1
     float left_gain = sp->gain * (1 - sp->pan)/2;
     float right_gain = sp->gain * (1 + sp->pan)/2;
-#else
-    float left_gain = sp->gain;
-    float right_gain = sp->gain;
-#endif    
     int left_delay = 0;
     int right_delay = 0;
     // Also delay less favored channel 1 ms max
@@ -511,74 +481,83 @@ void *decode_task(void *arg){
     }
     assert(left_delay >= 0 && right_delay >= 0);
 
-    if(samples_skipped > 0){
-      // Missing data -- if marker, just reset decoder and recover lost time
-      if(sp->type == OPUS_PT && sp->opus){
-	if(pkt->rtp.marker || samples_skipped > 3840) {
-	  opus_decoder_ctl(sp->opus,OPUS_RESET_STATE); // Reset decoder and catch up
-	} else {
-	  // Opus erasure handling - should also support FEC through look-ahead
-	  assert(samples_skipped > 0);
-	  float bounce[samples_skipped][2];
-	  // Decode any FEC, otherwise interpolate or create comfort noise
-	  int samples = opus_decode_float(sp->opus,pkt->data,pkt->len,&bounce[0][0],samples_skipped,1);	
-	  assert(samples <= samples_skipped);
-	  if(samples > 0){
-	    for(int i=0; i<samples; i++){
-	      sp->output_buffer[(sp->wptr +  left_delay) & (BUFFERSIZE-1)][0] = bounce[i][0] * left_gain;
-	      sp->output_buffer[(sp->wptr + right_delay) & (BUFFERSIZE-1)][1] = bounce[i][1] * right_gain;
-
-	      sp->wptr = (sp->wptr + 1) & (BUFFERSIZE-1);
-	    }
-	  }
-	} // No opus encoder reset
-      } else {
-	// gap in PCM data
-	if(!pkt->rtp.marker && samples_skipped < 3840){
-	  // Short loss; pad with implicit zeroes
-	  sp->wptr = (sp->wptr + samples_skipped) & (BUFFERSIZE-1);
-	}
-      }	  
-    }
     // Decode frame, write into output buffer
     signed short *data_ints = (signed short *)&pkt->data[0];
-    switch(sp->type){
+    switch(pkt->rtp.type){
     case PCM_STEREO_PT:
+      sp->type = PCM_STEREO_PT;
+      sp->channels = 2;
+      sp->frame_size = pkt->len / 4; // Number of stereo samples
+      if(samples_skipped > 0 && !pkt->rtp.marker && samples_skipped < 3840){
+	// Short loss; pad with implicit zeroes
+	sp->wptr = (sp->wptr + samples_skipped) & (BUFFERSIZE-1);
+      }	  
       for(int i=0; i < sp->frame_size; i++){
-	sp->output_buffer[(sp->wptr +  left_delay) & (BUFFERSIZE-1)][0] = SCALE * (signed short)ntohs(*data_ints++) * left_gain;
-	sp->output_buffer[(sp->wptr + right_delay) & (BUFFERSIZE-1)][1] = SCALE * (signed short)ntohs(*data_ints++) * right_gain;
-	sp->wptr = (sp->wptr + 1) & (BUFFERSIZE-1);
+	sp->output_buffer[(sp->wptr + i + left_delay) & (BUFFERSIZE-1)][0] = SCALE * (signed short)ntohs(*data_ints++) * left_gain;
+	sp->output_buffer[(sp->wptr + i + right_delay) & (BUFFERSIZE-1)][1] = SCALE * (signed short)ntohs(*data_ints++) * right_gain;
       }
+      sp->wptr = (sp->wptr + sp->frame_size) & (BUFFERSIZE-1);
       break;
     case PCM_MONO_PT:
+      sp->type = PCM_MONO_PT;
+      sp->channels = 1;
+      sp->frame_size = pkt->len / 2; // Number of stereo samples
+      // gap in PCM data
+      if(samples_skipped > 0 && !pkt->rtp.marker && samples_skipped < 3840){
+	// Short loss; pad with implicit zeroes
+	sp->wptr = (sp->wptr + samples_skipped) & (BUFFERSIZE-1);
+      }	  
       for(int i=0; i < sp->frame_size; i++){
 	float s = SCALE * (signed short)ntohs(*data_ints++);
-	sp->output_buffer[(sp->wptr +  left_delay) & (BUFFERSIZE-1)][0] = s * left_gain;
-	sp->output_buffer[(sp->wptr + right_delay) & (BUFFERSIZE-1)][1] = s * right_gain;
-	sp->wptr = (sp->wptr + 1) & (BUFFERSIZE-1);
+	sp->output_buffer[(sp->wptr + i + left_delay) & (BUFFERSIZE-1)][0] = s * left_gain;
+	sp->output_buffer[(sp->wptr + i + right_delay) & (BUFFERSIZE-1)][1] = s * right_gain;
       }
+      sp->wptr = (sp->wptr + sp->frame_size) & (BUFFERSIZE-1);
       break;
     case OPUS_PT:
     case 20:
+      sp->type = OPUS_PT;
+      sp->channels = 2;
+      sp->frame_size = opus_packet_get_nb_samples(pkt->data,pkt->len,SAMPRATE);
+      sp->opus_bandwidth = opus_packet_get_bandwidth(pkt->data);
+
       if(!sp->opus){
 	int error;
 	sp->opus = opus_decoder_create(SAMPRATE,2,&error);
 	assert(sp->opus);
       }
-      {
-	float bounce[sp->frame_size][2];
-	int samples = opus_decode_float(sp->opus,pkt->data,pkt->len,&bounce[0][0],sp->frame_size,0);	
-	assert(samples <= sp->frame_size);
-	if(samples > 0){	// check for error of some kind
+      if(samples_skipped > 0){
+	if(pkt->rtp.marker || samples_skipped >= 3840) {
+	  opus_decoder_ctl(sp->opus,OPUS_RESET_STATE); // Reset decoder and catch up
+	} else {
+	  // Decode any FEC, otherwise interpolate or create comfort noise
+	  float bounce[samples_skipped][2]; // pick a better number
+	  int samples = opus_decode_float(sp->opus,pkt->data,pkt->len,&bounce[0][0],samples_skipped,1);
+	  assert(samples <= samples_skipped);
 	  for(int i=0; i<samples; i++){
-	    sp->output_buffer[(sp->wptr +  left_delay) & (BUFFERSIZE-1)][0] = bounce[i][0] * left_gain;
-	    sp->output_buffer[(sp->wptr + right_delay) & (BUFFERSIZE-1)][1] = bounce[i][1] * right_gain;
-	    sp->wptr = (sp->wptr + 1) & (BUFFERSIZE-1);
+	    sp->output_buffer[(sp->wptr + i + left_delay) & (BUFFERSIZE-1)][0] = bounce[i][0] * left_gain;
+	    sp->output_buffer[(sp->wptr + i + right_delay) & (BUFFERSIZE-1)][1] = bounce[i][1] * right_gain;
 	  }
+	  sp->wptr = (sp->wptr + samples) & (BUFFERSIZE-1);
 	}
       }
+      {
+	float bounce[sp->frame_size][2];
+	int samples = opus_decode_float(sp->opus,pkt->data,pkt->len,&bounce[0][0],sp->frame_size,0);
+	assert(samples <= sp->frame_size);
+	for(int i=0; i<samples; i++){
+	  sp->output_buffer[(sp->wptr + i + left_delay) & (BUFFERSIZE-1)][0] = bounce[i][0] * left_gain;
+	  sp->output_buffer[(sp->wptr + i + right_delay) & (BUFFERSIZE-1)][1] = bounce[i][1] * right_gain;
+	}
+	sp->wptr = (sp->wptr + samples) & (BUFFERSIZE-1);
+      }
+      break;
+    default:
+      sp->frame_size = 0;
       break;
     }
+    sp->rtp_state.expected_timestamp = pkt->rtp.timestamp + sp->frame_size;
+  done:;
     free(pkt); pkt = NULL;
   }
   pthread_cleanup_pop(1);
@@ -604,6 +583,9 @@ void *display(void *arg){
     int row = 2;
     wmove(Mainscr,row,0);
     wclrtobot(Mainscr);
+
+    wmove(Mainscr,row,0);
+
     mvwprintw(Mainscr,row++,0,"Type        ch BW Gain   Pan      SSRC  Queue Source/Dest");
     for(struct session *sp = Session; sp; sp = sp->next){
       int bw = 0; // Audio bandwidth (not bitrate) in kHz
@@ -668,8 +650,6 @@ void *display(void *arg){
 	wprintw(Mainscr," dupes %lu",sp->rtp_state.dupes);
       if(sp->rtp_state.drops)
 	wprintw(Mainscr," drops %lu",sp->rtp_state.drops);
-      if(sp->rtp_state.resyncs)
-	wprintw(Mainscr," resyncs %lu",sp->rtp_state.resyncs);
       
       if(queue != 0)
 	mvwchgat(Mainscr,row,40,5,A_BOLD,0,NULL);
@@ -742,7 +722,6 @@ void *display(void *arg){
       // Reset counters
       Current->packets = 0;
       Current->rtp_state.dupes = 0;
-      Current->rtp_state.resyncs = 0;
       Current->rtp_state.drops = 0;
       break;
     break;
@@ -759,6 +738,10 @@ void *display(void *arg){
       break;
     case '\f':  // Screen repaint (formfeed, aka control-L)
       clearok(curscr,TRUE);
+      break;
+    case 's':
+      Pa_AbortStream(Pa_Stream);      
+      Pa_StartStream(Pa_Stream);      
       break;
     default:
       break;
