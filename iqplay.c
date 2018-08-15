@@ -1,26 +1,21 @@
-// $Id: iqplay.c,v 1.24 2018/04/22 21:46:05 karn Exp $
+// $Id: iqplay.c,v 1.26 2018/07/06 06:06:12 karn Exp $
 // Read from IQ recording, multicast in (hopefully) real time
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1 // allow bind/connect/recvfrom without casting sockaddr_in6
 #include <assert.h>
-#include <unistd.h>
 #include <stdlib.h>
-#include <limits.h>
-#include <pthread.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdarg.h>
+#include <unistd.h>
 #include <math.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <signal.h>
 #include <locale.h>
-#include <getopt.h>
 #include <sys/time.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <sys/resource.h>
+#include <fcntl.h>
 
 #include "misc.h"
 #include "radio.h"
@@ -120,7 +115,8 @@ int main(int argc,char *argv[]){
 
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   char *dest = "iq.playback.mcast.local"; // Default for testing
   char *locale = getenv("LANG");

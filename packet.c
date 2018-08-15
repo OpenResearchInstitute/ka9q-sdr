@@ -1,4 +1,4 @@
-// $Id: packet.c,v 1.13 2018/04/23 09:55:11 karn Exp $
+// $Id: packet.c,v 1.19 2018/07/30 19:52:12 karn Exp $
 // AFSK/FM packet demodulator
 // Reads RTP PCM audio stream, emits decoded frames in multicast UDP
 // Output framea don't have RTP headers, but they should
@@ -6,22 +6,22 @@
 
 #define _GNU_SOURCE 1
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <locale.h>
-#include <errno.h>
-#include <ctype.h>
-#include <sys/socket.h>
 #include <netdb.h>
-#include <time.h>
 
+#include "dsp.h"
 #include "filter.h"
 #include "misc.h"
 #include "multicast.h"
 #include "ax25.h"
+
+#define MAX_MCAST 20          // Maximum number of multicast addresses
 
 // Needs to be redone with common RTP receiver module
 struct session {
@@ -33,6 +33,8 @@ struct session {
   char port[NI_MAXSERV];    // RTP Sender source port
 
   struct rtp_state rtp_state;
+  uint16_t oseq;            // Output sequence number
+  uint32_t totalbytes;
 
   int input_pointer;
   struct filter_in *filter_in;
@@ -40,10 +42,8 @@ struct session {
   unsigned int decoded_packets;
 };
 
-
-
-char *Mcast_address_text = "pcm.vhf.mcast.local";
-char *Decode_mcast_address_text = "ax25.vhf.mcast.local:8192";
+char *Mcast_address_text[MAX_MCAST];
+char *Decode_mcast_address_text = "ax25.mcast.local";
 float const SCALE = 1./32768;
 int const Bufsize = 2048;
 int const AN = 2048; // Should be power of 2 for FFT efficiency
@@ -55,11 +55,15 @@ float const Bitrate = 1200;
 //int const Samppbit = Samprate/Bitrate;
 int const Samppbit = 40;
 
+int Nfds;                     // Number of streams
 int Input_fd = -1;
 int Output_fd = -1;
 struct session *Session;
 extern float Kaiser_beta;
 int Verbose;
+pthread_mutex_t Output_mutex;
+
+
 
 struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
   struct session *sp;
@@ -188,13 +192,32 @@ void *decode_task(void *arg){
 		struct tm *tmp;
 		time(&t);
 		tmp = gmtime(&t);
+		// Lock output to prevent intermingled output
+		pthread_mutex_lock(&Output_mutex);
+
 		printf("%d %s %04d %02d:%02d:%02d UTC ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
 		       tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
 		
 		printf("ssrc %x packet %d len %d:\n",sp->ssrc,sp->decoded_packets++,bytes);
 		dump_frame(hdlc_frame,bytes);
+		pthread_mutex_unlock(&Output_mutex);
 	      }
-	      send(Output_fd,hdlc_frame,bytes,0);
+	      struct rtp_header rtp;
+	      memset(&rtp,0,sizeof(rtp));
+	      rtp.version = 2;
+	      rtp.type = AX25_PT;
+	      rtp.seq = sp->oseq++;
+	      // RTP timestamp??
+	      rtp.timestamp = sp->totalbytes;
+	      sp->totalbytes += bytes;
+	      rtp.ssrc = sp->ssrc; // Copied from source
+
+	      unsigned char packet[2048],*dp;
+	      dp = packet;
+	      dp = hton_rtp(dp,&rtp);
+	      memcpy(dp,hdlc_frame,bytes);
+	      dp += bytes;
+	      send(Output_fd,packet,dp - packet,0);
 	    }
 	  }
 	  if(1 || frame_bit != 0){
@@ -242,14 +265,17 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,getenv("LANG"));
 
   int c;
-  Mcast_ttl = 5; // Low intensity, higher default is OK
+  Mcast_ttl = 10; // Low intensity, higher default is OK
   while((c = getopt(argc,argv,"I:R:vT:")) != EOF){
     switch(c){
     case 'v':
       Verbose++;
       break;
     case 'I':
-      Mcast_address_text = optarg;
+      if(Nfds == MAX_MCAST){
+	fprintf(stderr,"Too many multicast addresses; max %d\n",MAX_MCAST);
+      } else 
+	Mcast_address_text[Nfds++] = optarg;
       break;
     case 'R':
       Decode_mcast_address_text = optarg;
@@ -259,17 +285,29 @@ int main(int argc,char *argv[]){
       break;
     default:
       fprintf(stderr,"Usage: %s [-v] [-I input_mcast_address] [-R output_mcast_address] [-T mcast_ttl]\n",argv[0]);
-      fprintf(stderr,"Defaults: %s -I %s -R %s -T %d\n",argv[0],Mcast_address_text,Decode_mcast_address_text,Mcast_ttl);
+      fprintf(stderr,"Defaults: %s -I [none] -R %s -T %d\n",argv[0],Decode_mcast_address_text,Mcast_ttl);
       exit(1);
     }
   }
-
-  // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0);
-  if(Input_fd == -1){
-    fprintf(stderr,"Can't set up input from %s\n",
-	    Mcast_address_text);
+  if(Nfds == 0){
+    fprintf(stderr,"At least one -I option required\n");
     exit(1);
+  }
+  // Set up multicast input, create mask for select()
+  fd_set fdset_template; // Mask for select()
+  FD_ZERO(&fdset_template);
+  int max_fd = 2;        // Highest number fd for select()
+  int input_fd[Nfds];    // Multicast receive sockets
+
+  for(int i=0;i<Nfds;i++){
+    input_fd[i] = setup_mcast(Mcast_address_text[i],0);
+    if(input_fd[i] == -1){
+      fprintf(stderr,"Can't set up input %s\n",Mcast_address_text[i]);
+      continue;
+    }
+    if(input_fd[i] > max_fd)
+      max_fd = input_fd[i];
+    FD_SET(input_fd[i],&fdset_template);
   }
   Output_fd = setup_mcast(Decode_mcast_address_text,1);
   if(Output_fd == -10){
@@ -277,68 +315,83 @@ int main(int argc,char *argv[]){
 	    Decode_mcast_address_text);
     exit(1);
   }
+  pthread_mutex_init(&Output_mutex,NULL);
+
   struct rtp_header rtp;
   struct sockaddr sender;
   // audio input thread
   // Receive audio multicasts, multiplex into sessions, execute filter front end (which wakes up decoder thread)
   while(1){
-    unsigned char buffer[16384]; // Fix this
-    socklen_t socksize = sizeof(sender);
-    int size = recvfrom(Input_fd,buffer,sizeof(buffer),0,&sender,&socksize);
-    if(size == -1){
-      if(errno != EINTR){ // Happens routinely
-	perror("recvfrom");
-	usleep(1000);
-      }
-      continue;
-    }
-    if(size < RTP_MIN_SIZE){
-      usleep(1000); // Avoid tight loop
-      continue; // Too small to be valid RTP
-    }
-    // Extract RTP header
-    unsigned char *dp = buffer;
-    dp = ntoh_rtp(&rtp,dp);
-    size -= dp - buffer;
+    // Wait for traffic to arrive
+    fd_set fdset = fdset_template;
+    int s = select(max_fd+1,&fdset,NULL,NULL,NULL);
+    if(s < 0 && errno != EAGAIN && errno != EINTR)
+      break;
+    if(s == 0)
+      continue; // Nothing arrived; probably just an ignored signal
 
-    if(rtp.pad){
-      // Remove padding
-      size -= dp[size-1];
-      rtp.pad = 0;
-    }
+    for(int fd_index = 0;fd_index < Nfds;fd_index++){
+      if(input_fd[fd_index] == -1 || !FD_ISSET(input_fd[fd_index],&fdset))
+	continue;
 
-    if(rtp.type != PCM_MONO_PT)
-      continue; // Only mono PCM for now
-
-    struct session *sp = lookup_session(&sender,rtp.ssrc);
-    if(sp == NULL){
-      // Not found
-      if((sp = make_session(&sender,rtp.ssrc)) == NULL){
-	fprintf(stderr,"No room for new session!!\n");
+      unsigned char buffer[16384]; // Fix this
+      socklen_t socksize = sizeof(sender);
+      int size = recvfrom(input_fd[fd_index],buffer,sizeof(buffer),0,&sender,&socksize);
+      if(size == -1){
+	if(errno != EINTR){ // Happens routinely
+	  perror("recvfrom");
+	  usleep(1000);
+	}
 	continue;
       }
-      getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
-		  sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
-      sp->input_pointer = 0;
-      sp->filter_in = create_filter_input(AL,AM,REAL);
-      pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
-      if(Verbose)
-	fprintf(stderr,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
-    }
-    int sample_count = size / sizeof(signed short); // 16-bit sample count
-    int skipped_samples = rtp_process(&sp->rtp_state,&rtp,sample_count);
-    if(skipped_samples < 0)
-	continue;	// Drop probable duplicate(s)
-
-    // Ignore skipped_samples > 0; no real need to maintain sample count when squelch closes
-    // Even if its caused by dropped RTP packets there's no FEC to fix it anyway
-    signed short *samples = (signed short *)dp;
-    while(sample_count-- > 0){
-      // Swap sample to host order, convert to float
-      sp->filter_in->input.r[sp->input_pointer++] = ntohs(*samples++) * SCALE;
-      if(sp->input_pointer == sp->filter_in->ilen){
-	execute_filter_input(sp->filter_in); // Wakes up any threads waiting for data on this filter
+      if(size < RTP_MIN_SIZE){
+	usleep(1000); // Avoid tight loop
+	continue; // Too small to be valid RTP
+      }
+      // Extract RTP header
+      unsigned char *dp = buffer;
+      dp = ntoh_rtp(&rtp,dp);
+      size -= dp - buffer;
+      
+      if(rtp.pad){
+	// Remove padding
+	size -= dp[size-1];
+	rtp.pad = 0;
+      }
+      
+      if(rtp.type != PCM_MONO_PT)
+	continue; // Only mono PCM for now
+      
+      struct session *sp = lookup_session(&sender,rtp.ssrc);
+      if(sp == NULL){
+	// Not found
+	if((sp = make_session(&sender,rtp.ssrc)) == NULL){
+	  fprintf(stderr,"No room for new session!!\n");
+	  continue;
+	}
+	getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
+		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
 	sp->input_pointer = 0;
+	sp->filter_in = create_filter_input(AL,AM,REAL);
+	pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
+	if(Verbose)
+	  fprintf(stderr,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
+      }
+      int sample_count = size / sizeof(signed short); // 16-bit sample count
+      int skipped_samples = rtp_process(&sp->rtp_state,&rtp,sample_count);
+      if(skipped_samples < 0)
+	continue;	// Drop probable duplicate(s)
+      
+      // Ignore skipped_samples > 0; no real need to maintain sample count when squelch closes
+      // Even if its caused by dropped RTP packets there's no FEC to fix it anyway
+      signed short *samples = (signed short *)dp;
+      while(sample_count-- > 0){
+	// Swap sample to host order, convert to float
+	sp->filter_in->input.r[sp->input_pointer++] = ntohs(*samples++) * SCALE;
+	if(sp->input_pointer == sp->filter_in->ilen){
+	  execute_filter_input(sp->filter_in); // Wakes up any threads waiting for data on this filter
+	  sp->input_pointer = 0;
+	}
       }
     }
   }

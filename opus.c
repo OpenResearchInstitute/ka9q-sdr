@@ -1,25 +1,23 @@
-// $Id: opus.c,v 1.19 2018/04/23 09:53:11 karn Exp $
+// $Id: opus.c,v 1.22 2018/07/19 00:02:24 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
 // Copyright Jan 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
-#include <pthread.h>
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <limits.h>
 #include <string.h>
 #include <opus/opus.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <sys/resource.h>
 #include <netdb.h>
 #include <locale.h>
-#include <errno.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <signal.h>
 
 #include "misc.h"
 #include "multicast.h"
@@ -87,12 +85,13 @@ int main(int argc,char * const argv[]){
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
 
   // Drop root if we have it
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("setuid");
 
   setlocale(LC_ALL,getenv("LANG"));
 
   int c;
-  Mcast_ttl = 5; // By default, let Opus be routed
+  Mcast_ttl = 10; // By default, let Opus be routed
   while((c = getopt(argc,argv,"f:I:vR:B:o:xT:")) != EOF){
     switch(c){
     case 'f':

@@ -1,6 +1,10 @@
-// $Id: modes.c,v 1.25 2018/04/22 22:42:53 karn Exp $
+// $Id: modes.c,v 1.26 2018/07/06 06:06:12 karn Exp $
 // Load and search mode definition table in /usr/local/share/ka9q-radio/modes.txt
+
 // Copyright 2018, Phil Karn, KA9Q
+#include <assert.h>
+#include <errno.h>
+#include <math.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +12,7 @@
 #include <bsd/string.h>
 #endif
 #include <string.h>
-#include <errno.h>
+
 
 #include "misc.h"
 #include "radio.h"

@@ -1,10 +1,12 @@
-// $Id: multicast.h,v 1.13 2018/06/14 00:50:13 karn Exp $
+// $Id: multicast.h,v 1.18 2018/08/04 21:06:16 karn Exp $
 // Multicast and RTP functions, constants and structures
 // Not every RTP module uses these yet, they need to be revised
 // Copyright 2018, Phil Karn, KA9Q
 
 #ifndef _MULTICAST_H
-#define _MULTICAST_H
+#define _MULTICAST_H 1
+#include <stdint.h>
+
 int setup_mcast(char const *target,int output);
 extern char Default_mcast_port[];
 extern int Mcast_ttl;
@@ -26,7 +28,9 @@ struct rtp_header {
 #define RTP_VERS 2
 #define RTP_MARKER 0x80  // Marker flag in mpt field
 
-#define IQ_PT (97) // NON-standard payload type for my raw I/Q streams
+#define IQ_PT (97)    // NON-standard payload type for my raw I/Q stream - 16 bit version
+#define IQ_PT8 (98)   // NON-standard payload type for my raw I/Q stream - 8 bit version
+#define AX25_PT (96)  // NON-standard paylaod type for my raw AX.25 frames
 #define PCM_MONO_PT (11)
 #define PCM_STEREO_PT (10)
 
@@ -38,14 +42,13 @@ unsigned char *hton_rtp(unsigned char *, struct rtp_header *);
 
 // Internal state of common RTP receiver module
 struct rtp_state {
+  uint32_t ssrc;
   int init;
   uint16_t expected_seq;
   uint32_t expected_timestamp;
   long long packets;
   long long drops;
   long long dupes;
-  int seq_err;
-  int resyncs;
 };
 
 // Function to process incoming RTP packet headers

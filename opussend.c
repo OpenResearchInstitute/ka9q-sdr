@@ -1,24 +1,22 @@
-// $Id: opussend.c,v 1.14 2018/04/15 08:58:33 karn Exp $
+// $Id: opussend.c,v 1.17 2018/07/19 00:02:32 karn Exp $
 // Multicast local audio with Opus
 // Copyright Feb 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <signal.h>
-#include <limits.h>
 #include <string.h>
 #include <opus/opus.h>
-#include <sys/time.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/resource.h>
-#include <netdb.h>
+#include <signal.h>
 #include <portaudio.h>
-
 
 #include "misc.h"
 #include "multicast.h"
@@ -89,13 +87,14 @@ int main(int argc,char * const argv[]){
   prio = setpriority(PRIO_PROCESS,0,prio - 15);
 
   // Drop root if we have it
-  seteuid(getuid());
+  if(seteuid(getuid()) != 0)
+    perror("seteuid");
 
   setlocale(LC_ALL,getenv("LANG"));
 
   int c;
   int List_audio = 0;
-  Mcast_ttl = 5; // By default, let Opus be routed
+  Mcast_ttl = 10; // By default, let Opus be routed
   while((c = getopt(argc,argv,"I:vR:B:o:xT:Lf:")) != EOF){
     switch(c){
     case 'L':
@@ -272,11 +271,11 @@ int main(int argc,char * const argv[]){
     exit(1);
   }
   // Set up to transmit Opus RTP/UDP/IP
-
-
   unsigned long timestamp = 0;
   unsigned short seq = 0;
-  unsigned long ssrc = time(0);
+  struct timeval tp;
+  gettimeofday(&tp,NULL);
+  unsigned long ssrc = tp.tv_sec;
 
   // Graceful signal catch
   signal(SIGPIPE,closedown);

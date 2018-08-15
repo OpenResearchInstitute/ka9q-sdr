@@ -1,4 +1,4 @@
-// $Id: aprsfeed.c,v 1.3 2018/06/10 06:36:34 karn Exp $
+// $Id: aprsfeed.c,v 1.8 2018/07/31 11:25:32 karn Exp $
 // Process AX.25 frames containing APRS data, feed to APRS2 network
 // Copyright 2018, Phil Karn, KA9Q
 
@@ -11,18 +11,15 @@
 #include <string.h>
 #include <locale.h>
 #include <errno.h>
-#include <ctype.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <math.h>
-#include <time.h>
-#include <fcntl.h>
 
 #include "multicast.h"
 #include "ax25.h"
 #include "misc.h"
 
-char *Mcast_address_text = "ax25.vhf.mcast.local:8192";
+char *Mcast_address_text = "ax25.mcast.local";
 char *Host = "noam.aprs2.net";
 char *Port = "14580";
 char *User;
@@ -76,6 +73,8 @@ int main(int argc,char *argv[]){
   hints.ai_protocol = IPPROTO_TCP;
   hints.ai_flags = AI_CANONNAME|AI_ADDRCONFIG;
 
+  if(Verbose)
+    fprintf(stderr,"APRS server: %s:%s\n",Host,Port);
   struct addrinfo *results = NULL;
   int ecode;
   if((ecode = getaddrinfo(Host,Port,&hints,&results)) != 0){
@@ -109,7 +108,10 @@ int main(int argc,char *argv[]){
   char *message;
   int mlen;
   mlen = asprintf(&message,"user %s pass %s vers KA9Q-aprs 1.0\r\n",User,Passcode);
-  write(Network_fd,message,mlen);
+  if(write(Network_fd,message,mlen) != mlen){
+    perror("Login write to network failed");
+    exit(1);
+  }
   free(message);
   }
   
@@ -124,21 +126,31 @@ int main(int argc,char *argv[]){
   int pktlen;
 
   while((pktlen = recv(Input_fd,packet,sizeof(packet),0)) > 0){
+    struct rtp_header rtp_header;
+    unsigned char *dp = packet;
+
+    dp = ntoh_rtp(&rtp_header,dp);
+    pktlen -= dp - packet;
+
+    if(rtp_header.type != AX25_PT)
+      continue; // Wrong type
+
     // Emit local timestamp
     if(Verbose){
       time_t t;
       struct tm *tmp;
       time(&t);
       tmp = gmtime(&t);
-      fprintf(stderr,"%d %s %04d %02d:%02d:%02d UTC: ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
+      fprintf(stderr,"%d %s %04d %02d:%02d:%02d UTC",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
 	      tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
+      fprintf(stderr," ssrc %x seq %d",rtp_header.ssrc,rtp_header.seq);
     }
 
     // Parse incoming AX.25 frame
     struct ax25_frame frame;
-    if(ax25_parse(&frame,packet,pktlen-2) < 0){
+    if(ax25_parse(&frame,dp,pktlen) < 0){
       if(Verbose)
-	fprintf(stderr,"Unparsable packet\n");
+	fprintf(stderr," Unparsable packet\n");
       continue;
     }
 		
@@ -186,31 +198,41 @@ int main(int argc,char *argv[]){
     }      
     assert(sizeof(monstring) - sspace - 1 == strlen(monstring));
     if(Verbose)
-      fprintf(stderr,"%s\n",monstring);
+      fprintf(stderr," %s\n",monstring);
     if(frame.control != 0x03 || frame.type != 0xf0){
       if(Verbose)
-	fprintf(stderr,"Not relaying: invalid ax25 ctl/protocol\n");
+	fprintf(stderr," Not relaying: invalid ax25 ctl/protocol\n");
       continue;
     }
     if(infolen == 0){
       if(Verbose)
-	fprintf(stderr,"Not relaying: empty I field\n");
+	fprintf(stderr," Not relaying: empty I field\n");
       continue;
     }
     if(is_tcpip){
       if(Verbose)
-	fprintf(stderr,"Not relaying: Internet relayed packet\n");
+	fprintf(stderr," Not relaying: Internet relayed packet\n");
       continue;
     }
     if(frame.information[0] == '{'){
       if(Verbose)
-	fprintf(stderr,"Not relaying: third party traffic\n");	
+	fprintf(stderr," Not relaying: third party traffic\n");	
       continue;
     }
 
     // Send to APRS network with appended crlf
-    write(Network_fd,monstring,sizeof(monstring) - sspace - 1);
-    write(Network_fd,"\r\n",2);
+    {
+      assert(sspace >= 2);
+      int len = strlen(monstring);
+      char *cp = monstring + len;
+      *cp++ = '\r';
+      *cp++ = '\n';
+      len += 2;
+      if(write(Network_fd,monstring,len) != len){
+	perror(" network report write");
+	break;
+      }
+    }
   }
 }
 
@@ -223,7 +245,10 @@ void *netreader(void *arg){
     int r = read(Network_fd,&c,1);
     if(r < 0)
       break;
-    write(1,&c,1);
+    if(write(1,&c,1) != 1){
+      perror("server echo write");
+      break;
+    }
   }
   return NULL;
 }

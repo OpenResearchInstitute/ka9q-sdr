@@ -1,14 +1,12 @@
-// $Id: display.c,v 1.126 2018/06/14 00:50:13 karn Exp $
+// $Id: display.c,v 1.133 2018/08/04 21:06:16 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
-#include <errno.h>
-#include <stdio.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <assert.h>
 #include <limits.h>
 #include <pthread.h>
 #include <string.h>
@@ -18,25 +16,23 @@
 #include <math.h>
 #include <complex.h>
 #undef I
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <sys/time.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <ncurses.h>
 #include <ctype.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "radio.h"
-#include "audio.h"
 #include "filter.h"
 #include "multicast.h"
 #include "bandplan.h"
+
+// Control code to compute actual I/Q sample rate
+// Doesn't work that well because NTP steers the clock of the host computer
+#undef ACTUAL_SAMPLE_RATE
+
 
 float Spare; // General purpose knob for experiments
 
@@ -142,13 +138,10 @@ void adjust_item(struct demod *demod,int direction){
       set_freq(demod,get_freq(demod) + tunestep,NAN);
     break;
   case 2: // First LO
-    if(fabs(tunestep) < 1)
-      break; // First LO can't make steps < 1  Hz
-    
     if(demod->tuner_lock) // Tuner is locked, don't change it
       break;
 
-    // Keep frequency but move LO2, which will move LO1
+    // Keep frequency but move LO2, which will move LO1 (if it can move)
     double new_lo2 = demod->second_LO + tunestep;
     if(LO2_in_range(demod,new_lo2,0))
       set_freq(demod,get_freq(demod),new_lo2);
@@ -352,8 +345,8 @@ void *display(void *arg){
   col += 25;
   WINDOW * const options = newwin(12,12,row,col); // Demod options
   col += 12;
-  WINDOW * const sdr = newwin(12,24,row,col); // SDR information
-  col += 24;
+  WINDOW * const sdr = newwin(12,25,row,col); // SDR information
+  col += 25;
 
   WINDOW * const modes = newwin(Nmodes+2,7,row,col);
   col += Nmodes+2;
@@ -381,10 +374,12 @@ void *display(void *arg){
   mousemask(mask,NULL);
   MEVENT mouse_event;
 
+#if ACTUAL_SAMPLE_RATE
   struct timeval last_time;
   gettimeofday(&last_time,NULL);
   long long lastsamples = demod->samples;
   float actual_sample_rate = demod->samprate; // Initialize with nominal
+#endif
 
   for(;;){
     // update display indefinitely, handle user commands
@@ -535,11 +530,11 @@ void *display(void *arg){
 
     row = 1;
     col = 1;
-    mvwprintw(sig,row,col,"%15.1f dBFS",power2dB(demod->if_power));
+    mvwprintw(sig,row,col,"%15.1f dB",power2dB(demod->if_power));
     mvwaddstr(sig,row++,col,"IF");
-    mvwprintw(sig,row,col,"%15.1f dBFS",power2dB(demod->bb_power));
+    mvwprintw(sig,row,col,"%15.1f dB",power2dB(demod->bb_power));
     mvwaddstr(sig,row++,col,"Baseband");
-    mvwprintw(sig,row,col,"%15.1f dBFS/Hz",power2dB(demod->n0));
+    mvwprintw(sig,row,col,"%15.1f dB/Hz",power2dB(demod->n0));
     mvwaddstr(sig,row++,col,"N0");
     mvwprintw(sig,row,col,"%15.1f dBHz",10*log10f(sn0));
     mvwaddstr(sig,row++,col,"S/N0");
@@ -595,21 +590,21 @@ void *display(void *arg){
     col = 1;
     mvwprintw(sdr,row,col,"%'18d Hz",demod->status.samprate); // Nominal
     mvwaddstr(sdr,row++,col,"Samprate");
-    mvwprintw(sdr,row,col,"%'18.0f Hz",demod->status.frequency); // Integer for now (SDR dependent)
-    mvwaddstr(sdr,row++,col,"LO");
-    mvwprintw(sdr,row,col,"%'+18.5f ppm",demod->calibrate *1e6);
-    mvwaddstr(sdr,row++,col,"TCXO cal");
-    mvwprintw(sdr,row,col,"%+18.6f",demod->DC_i);  // Scaled to +/-1
-    mvwaddstr(sdr,row++,col,"I offset");
-    mvwprintw(sdr,row,col,"%+18.6f",demod->DC_q);
-    mvwaddstr(sdr,row++,col,"Q offset");
-    mvwprintw(sdr,row,col,"%+18.3f dB",power2dB(demod->imbalance));
-    mvwaddstr(sdr,row++,col,"I/Q imbal");
-    mvwprintw(sdr,row,col,"%+18.1f deg",demod->sinphi*DEGPRA);
-    mvwaddstr(sdr,row++,col,"I/Q phi");
-    mvwprintw(sdr,row,col,"%18u",demod->status.lna_gain);   // SDR dependent
-    mvwaddstr(sdr,row++,col,"LNA");
-    mvwprintw(sdr,row,col,"%18u",demod->status.mixer_gain); // SDR dependent
+    mvwprintw(sdr,row,col,"%'18.1f dBFS",power2dB(demod->level));
+    mvwprintw(sdr,row++,col,"A/D Level");
+    if(SDR_correct){
+      mvwprintw(sdr,row,col,"%+18.6f",demod->DC_i);  // Scaled to +/-1
+      mvwaddstr(sdr,row++,col,"I offset");
+      mvwprintw(sdr,row,col,"%+18.6f",demod->DC_q);
+      mvwaddstr(sdr,row++,col,"Q offset");
+      mvwprintw(sdr,row,col,"%+18.3f dB",power2dB(demod->imbalance));
+      mvwaddstr(sdr,row++,col,"I/Q imbal");
+      mvwprintw(sdr,row,col,"%+18.1f deg",demod->sinphi*DEGPRA);
+      mvwaddstr(sdr,row++,col,"I/Q phi");
+    }
+    mvwprintw(sdr,row,col,"%18u dB",demod->status.lna_gain);   // SDR dependent
+    mvwaddstr(sdr,row++,col,"LNA gain");
+    mvwprintw(sdr,row,col,"%18u dB",demod->status.mixer_gain); // SDR dependent
     mvwaddstr(sdr,row++,col,"Mix gain");
     mvwprintw(sdr,row,col,"%18u dB",demod->status.if_gain); // SDR dependent    
     mvwaddstr(sdr,row++,col,"IF gain");
@@ -629,11 +624,6 @@ void *display(void *arg){
       wattron(options,A_UNDERLINE);      
     mvwprintw(options,row++,col,"PLL");
     wattroff(options,A_UNDERLINE);
-
-    if(demod->flags & CAL)
-      wattron(options,A_UNDERLINE);
-    mvwprintw(options,row++,col,"Calibrate");
-    wattroff(options,A_UNDERLINE);      
 
     if(demod->flags & SQUARE)
       wattron(options,A_UNDERLINE);            
@@ -680,29 +670,34 @@ void *display(void *arg){
     col = 1;
     extern uint32_t Ssrc;
 
+    wmove(network,0,0);
+    wclrtobot(network);
+    mvwprintw(network,row++,col,"Source: %s:%s -> %s SSRC %0lx",source,sport,demod->iq_mcast_address_text,demod->rtp_state.ssrc);
+
+
+#if ACTUAL_SAMPLE_RATE
     // Estimate actual I/Q sample rate against local time of day clock
+    // Doesn't work very well because local clock is steered with NTP
     struct timeval current_time;
     gettimeofday(&current_time,NULL);
     double interval = current_time.tv_sec - last_time.tv_sec
       + (current_time.tv_usec - last_time.tv_usec)/1.e6;
     double instant_sample_rate = (demod->samples - lastsamples) / interval;
     if(instant_sample_rate < 10*actual_sample_rate) // Suppress glitches, especially at startup. '10' is empirically determined
-      actual_sample_rate += .002 * (instant_sample_rate - actual_sample_rate); // .002 is empirical
+      actual_sample_rate += .002 * (instant_sample_rate - actual_sample_rate); // empirical constant
 
     last_time = current_time;
     lastsamples = demod->samples;
-
-    wmove(network,0,0);
-    wclrtoeol(network);
-    mvwprintw(network,row++,col,"Source: %s:%s -> %s",source,sport,demod->iq_mcast_address_text);
     mvwprintw(network,row++,col,"IQ pkts %'llu samples %'llu rate %'.3lf Hz",
 	      demod->rtp_state.packets,demod->samples,actual_sample_rate);
+#else
+    mvwprintw(network,row++,col,"IQ pkts %'llu samples %'llu",
+	      demod->rtp_state.packets,demod->samples);
+#endif    
     if(demod->rtp_state.drops)
       wprintw(network," drops %'llu",demod->rtp_state.drops);
     if(demod->rtp_state.dupes)
       wprintw(network," dupes %'llu",demod->rtp_state.dupes);
-    if(demod->rtp_state.resyncs)
-      wprintw(network," resyncs %'llu",demod->rtp_state.resyncs);      
 
     mvwprintw(network,row++,col,"Time: %s",lltime(demod->status.timestamp));
     mvwprintw(network,row++,col,"Sink: %s; ssrc %8x; TTL %d%s",audio->audio_mcast_address_text,
@@ -919,16 +914,6 @@ void *display(void *arg){
 	set_mode(demod,demod->mode,0); // Restart demod thread
       }
       break;
-    case 'c':   // TCXO calibration offset, also affects sampling clock
-      {
-	char str[160],*ptr;
-	getentry("Enter calibration offset in ppm: ",str,sizeof(str));
-	double const f = strtod(str,&ptr);
-	if(ptr == str)
-	  break;
-	set_cal(demod,f * 1e-6);
-      }
-      break;
     case 'm': // Manually set modulation mode
       {
 	char str[1024];
@@ -1139,5 +1124,57 @@ void *display(void *arg){
 void touchitem(void *arg,int x,int y,int ev){
   touch_x = x /8;
   touch_y = y / 16;
+}
+
+// Parse a frequency entry in the form
+// 12345 (12345 Hz)
+// 12k345 (12.345 kHz)
+// 12m345 (12.345 MHz)
+// 12g345 (12.345 GHz)
+// If no g/m/k and number is too small, make a heuristic guess
+// NB! This assumes radio covers 100 kHz - 2 GHz; should make more general
+double const parse_frequency(const char *s){
+  char * const ss = alloca(strlen(s));
+
+  int i;
+  for(i=0;i<strlen(s);i++)
+    ss[i] = tolower(s[i]);
+
+  ss[i] = '\0';
+  
+  // k, m or g in place of decimal point indicates scaling by 1k, 1M or 1G
+  char *sp;
+  double mult;
+  if((sp = strchr(ss,'g')) != NULL){
+    mult = 1e9;
+    *sp = '.';
+  } else if((sp = strchr(ss,'m')) != NULL){
+    mult = 1e6;
+    *sp = '.';
+  } else if((sp = strchr(ss,'k')) != NULL){
+    mult = 1e3;
+    *sp = '.';
+  } else
+    mult = 1;
+
+  char *endptr = NULL;
+  double f = strtod(ss,&endptr);
+  if(endptr == ss || f == 0)
+    return 0; // Empty entry, or nothing decipherable
+  
+  if(mult != 1 || f >= 1e5) // If multiplier given, or frequency >= 100 kHz (lower limit), return as-is
+    return f * mult;
+    
+  // If frequency would be out of range, guess kHz or MHz
+  if(f < 100)
+    f *= 1e6;              // 0.1 - 99.999 Only MHz can be valid
+  else if(f < 500)         // Could be kHz or MHz, arbitrarily assume MHz
+    f *= 1e6;
+  else if(f < 2000)        // Could be kHz or MHz, arbitarily assume kHz
+    f *= 1e3;
+  else if(f < 100000)      // Can only be kHz
+    f *= 1e3;
+
+  return f;
 }
 

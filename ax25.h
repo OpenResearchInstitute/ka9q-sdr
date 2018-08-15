@@ -1,6 +1,9 @@
-// $Id: ax25.h,v 1.3 2018/06/10 06:36:34 karn Exp $
+// $Id: ax25.h,v 1.4 2018/07/06 06:10:04 karn Exp $
 // Functions defined in ax25.c
 // Copyright 2018, Phil Karn, KA9Q
+
+#ifndef _AX25_H
+#define _AX25_H 1
 
 // AX.25 frame, broken down
 #define MAX_DIGI 10
@@ -30,3 +33,4 @@ int crc_good(unsigned char *frame,int length);
 char *get_callsign(char *result,unsigned char *in);
 int decode_base91(char *in);
 
+#endif

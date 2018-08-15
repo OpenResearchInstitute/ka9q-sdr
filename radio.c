@@ -1,14 +1,12 @@
-// $Id: radio.c,v 1.86 2018/05/02 01:27:50 karn Exp $
+// $Id: radio.c,v 1.96 2018/07/16 12:39:53 karn Exp $
 // Core of 'radio' program - control LOs, set frequency/mode, etc
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <pthread.h>
 #include <string.h>
-#include <stdint.h>
 #if defined(linux)
 #include <bsd/string.h>
 #endif
@@ -16,21 +14,16 @@
 #include <complex.h>
 #include <fftw3.h>
 #undef I
-#include <sys/time.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "radio.h"
 #include "filter.h"
-#include "audio.h"
 
 
-// These are specific to the AMSAT FUNcube dongle; since other SDR front ends
-// likely have similar limitations, these need to be generalized
-static double const Raster = 125.; // Tune LO1 to multiples of this frequency
 // SDR alias keep-out region, i.e., stay between -(samprate/2 - IF_EXCLUDE) and (samprate/2 - IF_EXCLUDE)
-int IF_EXCLUDE = 16000; // Hardwired for UK Funcube Dongle Pro+, make this more general
+const float IF_EXCLUDE = 0.95; // Assume decimation filters roll off above Fs/2 * IF_EXCLUDE
 
 // Preferred A/D sample rate; ignored by funcube but may be used by others someday
 const int ADC_samprate = 192000;
@@ -41,9 +34,13 @@ const int ADC_samprate = 192000;
 // Update power measurement
 // Pass to input of pre-demodulation filter
 
-float const DC_alpha = 0.00001;    // high pass filter coefficient for DC offset estimates, per sample
-float const Power_alpha = 0.00001; // high pass filter coefficient for power and I/Q imbalance estimates, per sample
-float const SCALE = 1./SHRT_MAX;   // Scale signed 16-bit int to float in range -1, +1
+float const DC_alpha = 1e-6;    // high pass filter coefficient for DC offset estimates, per sample
+float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
+
+float const SCALE16 = 1./SHRT_MAX; // Scale signed 16-bit int to float in range -1, +1
+float const SCALE8 = 1./127;       // Scale signed 8-bit int to float in range -1, +1
+
+int is_phasor_init(const complex double x);
 
 void *proc_samples(void *arg){
   // gain and phase balance coefficients
@@ -64,6 +61,7 @@ void *proc_samples(void *arg){
   int in_cnt = 0;
   struct packet *pkt = NULL;
 
+
   while(1){
     // Pull next I/Q data packet off queue
     pthread_mutex_lock(&demod->qmutex);
@@ -73,7 +71,17 @@ void *proc_samples(void *arg){
     demod->queue = pkt->next;
     pthread_mutex_unlock(&demod->qmutex);
 
-    int sampcount = pkt->len / (2 * sizeof(signed short));
+    int sampcount;
+
+    switch(pkt->rtp.type){
+    default: // Shut up lint
+    case IQ_PT:
+      sampcount = pkt->len / (2 * sizeof(signed short));
+      break;
+    case IQ_PT8:
+      sampcount = pkt->len / (2 * sizeof(signed char));
+      break;
+    }
     int time_step = rtp_process(&demod->rtp_state,&pkt->rtp,sampcount);
     if(time_step < 0 || time_step > 192000){
       // Old samples, or too big a jump; drop. Shouldn't happen if sequence number isn't old
@@ -103,36 +111,55 @@ void *proc_samples(void *arg){
     }
     // Process individual samples
     signed short *sp = (signed short *)pkt->data;
+    signed char *cp = (signed char *)pkt->data;
     demod->samples += sampcount;
 
     while(sampcount--){
 
-      float samp_i = *sp++ * SCALE;
-      float samp_q = *sp++ * SCALE;
+      float samp_i,samp_q;
 
-      // Remove and update DC offsets
-      samp_i_sum += samp_i;
-      samp_q_sum += samp_q;
-      samp_i -= demod->DC_i;
-      samp_q -= demod->DC_q;
-
+      switch(pkt->rtp.type){
+      default: // shuts up lint
+      case IQ_PT:
+	samp_i = *sp++ * SCALE16;
+	samp_q = *sp++ * SCALE16;
+	break;
+      case IQ_PT8:
+	samp_i = *cp++ * SCALE8;
+	samp_q = *cp++ * SCALE8;
+	break;
+      }
+      if(SDR_correct){
+	// Remove and update DC offsets
+	samp_i_sum += samp_i;
+	samp_q_sum += samp_q;
+	samp_i -= demod->DC_i;
+	samp_q -= demod->DC_q;
+      }
+	
       // accumulate I and Q energies before gain correction
       samp_i_sq_sum += samp_i * samp_i;
       samp_q_sq_sum += samp_q * samp_q;
-      
-      // Balance gains, keeping constant total energy
-      samp_i *= gain_i;                  samp_q *= gain_q;
-      
-      // Accumulate phase error
-      dotprod += samp_i * samp_q;
+	
+      if(SDR_correct){
+	// Balance gains, keeping constant total energy
+	samp_i *= gain_i;                  samp_q *= gain_q;
+	
+	// Accumulate phase error
+	dotprod += samp_i * samp_q;
+	
+	// Correct phase
+	samp_q = secphi * samp_q - tanphi * samp_i;
+      }
+      // Scale down according to analog gain from SDR front end
+      complex float samp = CMPLXF(samp_i,samp_q) * demod->gain_factor;
 
-      // Correct phase
-      samp_q = secphi * samp_q - tanphi * samp_i;
-      complex float samp = CMPLXF(samp_i,samp_q);
+#if 0
       // Experimental notch filter
       if(demod->nf)
 	samp = notch(demod->nf,samp);
-      
+#endif
+
       // Apply 2nd LO
       samp *= demod->second_LO_phasor;
       demod->second_LO_phasor *= demod->second_LO_phasor_step;
@@ -148,29 +175,36 @@ void *proc_samples(void *arg){
       if(in_cnt == demod->filter_in->ilen){
 	// Filter buffer is full, execute it
 	execute_filter_input(demod->filter_in);
-	
-	// Update every fft block
-	// estimates of DC offset, signal powers and phase error
-	demod->DC_i += DC_alpha * (samp_i_sum - in_cnt * demod->DC_i);
-	demod->DC_q += DC_alpha * (samp_q_sum - in_cnt * demod->DC_q);
-	float block_energy = samp_i_sq_sum + samp_q_sq_sum;
-	demod->imbalance += Power_alpha * in_cnt * ((samp_i_sq_sum / samp_q_sq_sum) - demod->imbalance);
-	demod->if_power += Power_alpha * (block_energy - in_cnt * demod->if_power); // Average IF power
-	
-	float dpn = 2 * dotprod / block_energy;
-	demod->sinphi += Power_alpha * in_cnt * (dpn - demod->sinphi);
-	gain_q = sqrtf(0.5 * (1 + demod->imbalance));
-	gain_i = sqrtf(0.5 * (1 + 1./demod->imbalance));
-	secphi = 1/sqrtf(1 - demod->sinphi * demod->sinphi); // sec(phi) = 1/cos(phi)
-	tanphi = demod->sinphi * secphi;                     // tan(phi) = sin(phi) * sec(phi) = sin(phi)/cos(phi)
-	
-	// Reset for next block
+	float block_energy = 0.5 * (samp_i_sq_sum + samp_q_sq_sum); // Scale for two components per complex sample
+	demod->level = block_energy / in_cnt; // Raw A/D level, without analog gain adjustment
+	// gain_factor is a voltage ratio, square to get power ratio
+	demod->if_power = demod->gain_factor * demod->gain_factor * demod->level; // Signal level after gain adjustment
+
+	if(SDR_correct){
+	  // Update every fft block
+	  // estimates of DC offset, signal powers and phase error
+	  float smooth_factor = in_cnt/(demod->samprate * Power_alpha);
+	  if(isnan(smooth_factor) || isinf(smooth_factor))
+	    smooth_factor = in_cnt;
+
+	  demod->DC_i += DC_alpha * (samp_i_sum - in_cnt * demod->DC_i);
+	  demod->DC_q += DC_alpha * (samp_q_sum - in_cnt * demod->DC_q);
+	  demod->imbalance += smooth_factor * ((samp_i_sq_sum / samp_q_sq_sum) - demod->imbalance);
+	  float dpn = dotprod / block_energy;
+	  demod->sinphi += smooth_factor * (dpn - demod->sinphi);
+	  gain_q = sqrtf(0.5 * (1 + demod->imbalance));
+	  gain_i = sqrtf(0.5 * (1 + 1./demod->imbalance));
+	  secphi = 1/sqrtf(1 - demod->sinphi * demod->sinphi); // sec(phi) = 1/cos(phi)
+	  tanphi = demod->sinphi * secphi;                     // tan(phi) = sin(phi) * sec(phi) = sin(phi)/cos(phi)
+	  
+	  // Reset for next block
+	  samp_i_sum = 0;
+	  samp_q_sum = 0;
+	  dotprod = 0;
+	}
 	in_cnt = 0;
-	samp_i_sum = 0;
-	samp_q_sum = 0;
 	samp_i_sq_sum = 0;
 	samp_q_sq_sum = 0;
-	dotprod = 0;
 	
 	// Renormalize phasors
 	demod->second_LO_phasor /= cabs(demod->second_LO_phasor); // renormalize every block
@@ -183,79 +217,13 @@ void *proc_samples(void *arg){
     free(pkt); pkt = NULL;
   } // end of main loop
 }
-// The funcube dongle uses the Mirics MSi001 tuner. It has a fractional N synthesizer that can't actually do integer frequency steps.
-// This formula is hacked down from code from Howard Long; it's what he uses in the firmware so I can figure out
-// the *actual* frequency. Of course, we still have to correct it for the TCXO offset.
-
-// This needs to be generalized since other tuners will be completely different!
-double fcd_actual(unsigned int u32Freq){
-  typedef unsigned int UINT32;
-  typedef unsigned long long UINT64;
-
-  const UINT32 u32Thresh = 3250U;
-  const UINT32 u32FRef = 26000000U;
-  double f64FAct;
-  
-  struct
-  {
-    UINT32 u32Freq;
-    UINT32 u32FreqOff;
-    UINT32 u32LODiv;
-  } *pts,ats[]=
-      {
-	{4000000U,130000000U,16U},
-	{8000000U,130000000U,16U},
-	{16000000U,130000000U,16U},
-	{32000000U,130000000U,16U},
-	{75000000U,130000000U,16U},
-	{125000000U,0U,32U},
-	{142000000U,0U,16U},
-	{148000000U,0U,16U},
-	{300000000U,0U,16U},
-	{430000000U,0U,4U},
-	{440000000U,0U,4U},
-	{875000000U,0U,4U},
-	{UINT32_MAX,0U,2U},
-	{0U,0U,0U}
-      };
-  for(pts = ats; u32Freq >= pts->u32Freq; pts++)
-    ;
-
-  if (pts->u32Freq == 0)
-    pts--;
-      
-  // Frequency of synthesizer before divider - can possibly exceed 32 bits, so it's stored in 64
-  UINT64 u64FSynth = ((UINT64)u32Freq + pts->u32FreqOff) * pts->u32LODiv;
-
-  // Integer part of divisor ("INT")
-  UINT32 u32Int = u64FSynth / (u32FRef*4);
-
-  // Subtract integer part to get fractional and AFC parts of divisor ("FRAC" and "AFC")
-  UINT32 u32Frac4096 =  (u64FSynth<<12) * u32Thresh/(u32FRef*4) - (u32Int<<12) * u32Thresh;
-
-  // FRAC is higher 12 bits
-  UINT32 u32Frac = u32Frac4096>>12;
-
-  // AFC is lower 12 bits
-  UINT32 u32AFC = u32Frac4096 - (u32Frac<<12);
-      
-  // Actual tuner frequency, in floating point, given specified parameters
-  f64FAct = (4.0 * u32FRef / (double)pts->u32LODiv) * (u32Int + ((u32Frac * 4096.0 + u32AFC) / (u32Thresh * 4096.))) - pts->u32FreqOff;
-  
-  // double f64step = ( (4.0 * u32FRef) / (pts->u32LODiv * (double)u32Thresh) ) / 4096.0;
-  //      printf("f64step = %'lf, u32LODiv = %'u, u32Frac = %'d, u32AFC = %'d, u32Int = %'d, u32Thresh = %'d, u32FreqOff = %'d, f64FAct = %'lf err = %'lf\n",
-  //	     f64step, pts->u32LODiv, u32Frac, u32AFC, u32Int, u32Thresh, pts->u32FreqOff,f64FAct,f64FAct - u32Freq);
-  return f64FAct;
-}
-
-
 
 // Get true first LO frequency, with TCXO offset applied
 double const get_first_LO(const struct demod * const demod){
   if(demod == NULL)
     return NAN;
 	 
-  return fcd_actual(demod->status.frequency) * (1 + demod->calibrate);  // True frequency, as quantized and corrected for TCXO offset
+  return demod->status.frequency;
 }
 
 
@@ -358,9 +326,7 @@ double set_first_LO(struct demod * const demod,double first_LO){
   if(first_LO == current_lo1 || first_LO <= 0 || demod->tuner_lock || demod->input_source_address.sa_family != AF_INET)
     return first_LO;
 
-  // Set tuner to integer nearest requested frequency after decalibration
-  demod->requested_status.frequency = round(first_LO / (1 + demod->calibrate)); // What we send to the tuner
-  demod->requested_status.frequency = Raster * round(demod->requested_status.frequency / Raster);
+  demod->requested_status.frequency = first_LO;
 
   // These need a way to set
   // The Funcube dongle has a very wide dynamic range, so it is rarely necessary
@@ -378,8 +344,8 @@ double set_first_LO(struct demod * const demod,double first_LO){
   if(sendto(demod->ctl_fd,&demod->requested_status,sizeof(demod->requested_status),0,(struct sockaddr *)&sdraddr,sizeof(sdraddr)) == -1)
     perror("sendto control socket");
 
-  // Return the tuner's new true frequency, as rounded, quantized and corrected for TCXO offset
-  return fcd_actual(demod->requested_status.frequency) * (1 + demod->calibrate);
+  // Return the tuner's current frequency, which will change
+  return demod->status.frequency;
 }
 
 // If avoid_alias is true, return 1 if specified carrier frequency is in range of LO2 given
@@ -493,9 +459,6 @@ int set_mode(struct demod * const demod,const char * const mode,int const defaul
     set_shift(demod,Modes[mindex].shift);
   }
 
-  // Load calibration file
-  loadcal(demod);
-
   // Might now be out of range because of change in filter passband
   set_freq(demod,get_freq(demod),NAN);
 
@@ -503,23 +466,6 @@ int set_mode(struct demod * const demod,const char * const mode,int const defaul
   return 0;
 }      
 
-
-// Set TXCO calibration for front end
-// + means clock is fast, - means clock is slow
-int set_cal(struct demod * const demod,double const cal){
-  if(demod == NULL)
-    return -1;
-
-  double f = get_freq(demod);
-  demod->calibrate = cal;
-  // Don't get deadlocked if this is before we know the sample rate
-  // e.g., with the -c command line option
-  if(demod->status.samprate != 0){
-    demod->samprate = demod->status.samprate * (1 + cal);
-    set_freq(demod,f,NAN); // Keep original dial frequency
-  }
-  return 0;
-}
 
 // Called from RTP receiver to process incoming metadata from SDR front end
 void update_status(struct demod *demod,struct status *new_status){
@@ -532,7 +478,6 @@ void update_status(struct demod *demod,struct status *new_status){
 	// This needs to be set before the demod thread starts!
 	// Signalled every time the status is updated
 	// status.samprate contains *nominal* A/D sample rate
-	// demod->samprate contains *corrected* A/D sample rate
 	// Use nominal rates here so result is clean integer
 	pthread_mutex_lock(&demod->status_mutex);
 	demod->status.samprate = new_status->samprate;
@@ -540,16 +485,16 @@ void update_status(struct demod *demod,struct status *new_status){
 	  // Sample rate is higher than audio rate; decimate
 	  demod->interpolate = 1;
 	  demod->decimate = demod->status.samprate / Audio.samprate;
-	  demod->samprate = demod->status.samprate * (1 + demod->calibrate);
-	  demod->max_IF = demod->status.samprate/2 - IF_EXCLUDE;
+	  demod->samprate = demod->status.samprate;
+	  demod->max_IF = IF_EXCLUDE * demod->status.samprate/2;
 	  demod->min_IF = -demod->max_IF;
 	} else {
 	  // Sample rate is lower than audio rate
 	  // Interpolate up to audio rate, pretend sample rate is audio rate
 	  demod->decimate = 1; 
 	  demod->interpolate = Audio.samprate / demod->status.samprate;	  
-	  demod->samprate = Audio.samprate * (1 + demod->calibrate);
-	  demod->max_IF = Audio.samprate/2 - IF_EXCLUDE;
+	  demod->samprate = Audio.samprate;
+	  demod->max_IF = IF_EXCLUDE * Audio.samprate/2;
 	  demod->min_IF = -demod->max_IF;
 	}
 	// re-call these two to recalculate their phasor steps
@@ -584,6 +529,8 @@ void update_status(struct demod *demod,struct status *new_status){
 	sig++;
       }
       if(sig){
+	// Voltage gain to normalize signal power for analog gain settings
+	demod->gain_factor = powf(10.,-0.05*(demod->status.lna_gain + demod->status.if_gain + demod->status.mixer_gain));
 	// Something changed, store the new status and let everybody know
 	pthread_mutex_lock(&demod->status_mutex);
 	pthread_cond_broadcast(&demod->status_cond);
@@ -606,6 +553,7 @@ float const compute_n0(struct demod const * const demod){
   
   // Compute smoothed power spectrum
   // There will be some spectral leakage because the convolution FFT we're using is unwindowed
+  // Includes both real and imaginary components, so this will have to be divided by 2 to get 0dBFS convention
   for(int n=0;n<N;n++)
     power_spectrum[n] = cnrmf(f->fdomain[n]);
 
@@ -634,6 +582,12 @@ float const compute_n0(struct demod const * const demod){
     new_avg_n /= noisebins;
     avg_n = new_avg_n;
   }
-  // return noise power per Hz
-  return avg_n / (N*demod->samprate);
+  // return noise power per Hz, normalized to 0dBFS
+  return avg_n / (2*N*demod->samprate);
+}
+// Return 1 if complex phasor appears to be initialized, 0 if not
+int is_phasor_init(const complex double x){
+  if(isnan(creal(x)) || isnan(cimag(x)) || cnrm(x) < 0.9)
+    return 0;
+  return 1;
 }

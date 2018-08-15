@@ -1,4 +1,4 @@
-// $Id: sdr.h,v 1.7 2018/04/22 17:30:22 karn Exp $
+// $Id: sdr.h,v 1.8 2018/07/06 06:13:36 karn Exp $
 // Interfaces to the Software Defined Radio front end hardware
 // Right now these are somewhat specific to the AMSAT UK Funcube Dongle, and they
 // need to be generalized to other hardware without losing the specific features
@@ -8,12 +8,7 @@
 #define _SDR_H 1
 
 #include <stdint.h>
-#include <complex.h>
-#undef I
 
-int mirics_gain(double f,int gr,uint8_t *bb, uint8_t *lna,uint8_t *mix);
-int front_end_init(int,int,int);
-int get_adc(short *,int);
 void closedown(int);
 
 // Sent in each RTP packet right after header

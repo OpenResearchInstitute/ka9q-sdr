@@ -1,24 +1,20 @@
-// $Id: linear.c,v 1.20 2018/04/22 22:13:15 karn Exp $
+// $Id: linear.c,v 1.24 2018/07/11 06:56:48 karn Exp $
 
 // General purpose linear demodulator
 // Handles USB/IQ/CW/etc, basically all modes but FM and envelope-detected AM
 // Copyright Sept 20 2017 Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
+#include <assert.h>
 #include <complex.h>
 #include <math.h>
 #include <fftw3.h>
-#include <assert.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <limits.h>
 #include <pthread.h>
-#include <string.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "filter.h"
 #include "radio.h"
-#include "audio.h"
 
 
 void *demod_linear(void *arg){
@@ -41,7 +37,7 @@ void *demod_linear(void *arg){
 #endif
   int const hangmax = demod->hangtime / samptime; // samples before AGC increase
   if(isnan(demod->gain))
-    demod->gain = dB2voltage(20.0); // initial setting - a little quiet to avoid blasting
+    demod->gain = dB2voltage(100.0); // initial setting
 
   // Coherent mode parameters
   float const snrthreshdb = 3;     // Loop lock threshold at +3 dB SNR
@@ -107,7 +103,6 @@ void *demod_linear(void *arg){
   float delta_f = 0;                    // FFT-derived offset
   float ramp = 0;                       // Frequency sweep (do we still need this?)
   int lock_count = 0;
-  float calibrate_offset = 0;           // Frequency error for calibration mode
   int pll_lock = 0;
 
   while(!demod->terminate){
@@ -237,15 +232,6 @@ void *demod_linear(void *arg){
       else if((feedback <= binsize) && (ramp < 0))
 	ramp = ramprate;  // Reached downward sweep limit, sweep up
       
-      if((demod->flags & CAL) && pll_lock){
-	// In calibrate mode, keep highly smoothed estimate of frequency offset
-	// Apply this to calibration estimate below
-	calibrate_offset += .01 * (feedback + delta_f - calibrate_offset);
-	// apply and clear the current measured offset
-	set_cal(demod,demod->calibrate - calibrate_offset/get_freq(demod));
-	calibrate_offset = 0;
-	savecal(demod);
-      }
       if(isnan(demod->foffset))
 	demod->foffset = feedback + delta_f;
       else
@@ -308,8 +294,8 @@ void *demod_linear(void *arg){
       // I on left, Q on right
       send_stereo_audio(audio,(float *)filter->output.c,filter->olen);
     }
-    // Total baseband power (I+Q)
-    demod->bb_power = (signal + noise) / filter->olen;
+    // Total baseband power (I+Q), scaled to each sample
+    demod->bb_power = (signal + noise) / (2*filter->olen);
     // PLL loop SNR, if used
     if(noise != 0 && (demod->flags & PLL)){
       demod->snr = (signal / noise) - 1; // S/N as power ratio; meaningful only in coherent modes

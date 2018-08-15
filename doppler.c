@@ -1,23 +1,15 @@
-// $Id: doppler.c,v 1.7 2018/04/22 21:11:01 karn Exp $
+// $Id: doppler.c,v 1.8 2018/07/06 06:06:12 karn Exp $
 // Real-time doppler steering
 // Copyright 2018, Phil Karn KA9Q
 #define _GNU_SOURCE 1
 #include <assert.h>
+#include <stdio.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <limits.h>
 #include <pthread.h>
-#include <string.h>
 #if defined(linux)
 #include <bsd/string.h>
 #endif
-#include <math.h>
-#include <complex.h>
-#include <fftw3.h>
-#undef I
 #include <sys/time.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 
 #include "misc.h"
 #include "radio.h"

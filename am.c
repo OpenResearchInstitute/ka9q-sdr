@@ -1,20 +1,16 @@
-// $Id: am.c,v 1.32 2018/04/22 18:18:02 karn Exp $
+// $Id: am.c,v 1.34 2018/07/08 10:05:51 karn Exp $
 // AM envelope demodulator thread for 'radio'
 // Copyright Oct 9 2017, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
 #include <complex.h>
 #include <math.h>
 #include <assert.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <limits.h>
 #include <pthread.h>
-#include <string.h>
 
 #include "misc.h"
+#include "dsp.h"
 #include "filter.h"
 #include "radio.h"
-#include "audio.h"
 
 void *demod_am(void *arg){
   pthread_setname("am");
@@ -82,7 +78,8 @@ void *demod_am(void *arg){
       samples[n] = (samp - DC_filter) * demod->gain;
     }
     send_mono_audio(audio,samples,filter->olen);
-    demod->bb_power = (signal + noise) / filter->olen;
+    // Scale to each sample so baseband power will display correctly
+    demod->bb_power = (signal + noise) / (2*filter->olen);
   } // terminate
   delete_filter_output(filter);
   demod->filter_out = NULL;

@@ -1,4 +1,4 @@
-// $Id: hid-libusb.c,v 1.5 2017/08/12 09:07:37 karn Exp $
+// $Id: hid-libusb.c,v 1.6 2018/08/04 22:19:33 karn Exp $
 // Modified by KA9Q?
 /*******************************************************
  HIDAPI - Multi-Platform library for
@@ -55,6 +55,10 @@
 #include "iconv.h"
 
 #include "hidapi.h"
+
+#if __APPLE__
+#include "misc.h" // to get barrier stuff
+#endif
 
 #ifdef __cplusplus
 extern "C" {
