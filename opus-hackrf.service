@@ -1,0 +1,15 @@
+# $Id: opus-hackrf.service,v 1.1 2018/08/28 21:42:29 karn Exp $
+# Systemd startup module for PCM->Opus transcoder for HackRF audio
+# Phil Karn, KA9Q Aug 2018
+
+[Unit]
+Description=HackRF opus transcoder
+Requires=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opus -I pcm.hackrf.mcast.local -R opus.hackrf.mcast.local
+DynamicUser=1
+
+[Install]
+WantedBy=multi-user.target
