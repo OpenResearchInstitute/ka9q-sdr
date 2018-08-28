@@ -1,0 +1,26 @@
+# $Id: funcube1.service,v 1.2 2018/08/28 21:41:28 karn Exp $
+# Systemd unit to start up funcube daemon for funcube dongle 1
+# Phil Karn, KA9Q Aug 2018
+
+[Unit]
+Description=Funcube 1 daemon
+After=sound.target
+Requires=sound.target
+After=network-online.target
+Requires=network-online.target
+After=multi-user.target
+Requires=multi-user.target
+
+[Service]
+User=funcube
+Group=nogroup
+Type=forking
+PermissionsStartOnly=1
+ExecStartPre=/bin/mkdir /run/funcube
+ExecStartPre=/bin/chmod 0755 /run/funcube
+ExecStartPre=/bin/chown funcube /run/funcube
+ExecStart=/usr/local/bin/funcube -d -I 1 -R iq.hf.mcast.local
+PIDFile=/run/funcube/1.pid
+
+[Install]
+#WantedBy=multi-user.target

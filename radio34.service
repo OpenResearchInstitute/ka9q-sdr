@@ -1,0 +1,15 @@
+# $Id: radio34.service,v 1.1 2018/08/28 21:43:22 karn Exp $
+# systemd unit for FM radio receiver on 144.34 MHz (WB8ELK pico payload alternate frequency)
+# Phil Karn, KA9Q, Aug 2018
+
+[Unit]
+Description=144.34 MHz FM radio
+Requires=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/radio -q -m fm -f 144m34 -I iq.vhf.mcast.local -R pcm.vhf.mcast.local
+DynamicUser=true
+
+[Install]
+WantedBy=multi-user.target

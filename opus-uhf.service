@@ -1,0 +1,11 @@
+[Unit]
+Description=UHF opus transcoder
+Requires=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opus -I pcm.uhf.mcast.local -R opus.uhf.mcast.local
+DynamicUser=1
+
+[Install]
+WantedBy=multi-user.target
