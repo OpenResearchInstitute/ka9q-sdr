@@ -1,7 +1,6 @@
-// $Id: packet.c,v 1.19 2018/07/30 19:52:12 karn Exp $
+// $Id: packet.c,v 1.21 2018/08/27 10:48:03 karn Exp $
 // AFSK/FM packet demodulator
-// Reads RTP PCM audio stream, emits decoded frames in multicast UDP
-// Output framea don't have RTP headers, but they should
+// Reads RTP PCM audio stream, emits decoded frames in multicast RTP
 // Copyright 2018, Phil Karn, KA9Q
 
 #define _GNU_SOURCE 1
@@ -195,11 +194,12 @@ void *decode_task(void *arg){
 		// Lock output to prevent intermingled output
 		pthread_mutex_lock(&Output_mutex);
 
-		printf("%d %s %04d %02d:%02d:%02d UTC ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
+		fprintf(stdout,"%d %s %04d %02d:%02d:%02d UTC ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
 		       tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
 		
-		printf("ssrc %x packet %d len %d:\n",sp->ssrc,sp->decoded_packets++,bytes);
-		dump_frame(hdlc_frame,bytes);
+		fprintf(stdout,"ssrc %x packet %d len %d:\n",sp->ssrc,sp->decoded_packets++,bytes);
+		dump_frame(stdout,hdlc_frame,bytes);
+		fflush(stdout);
 		pthread_mutex_unlock(&Output_mutex);
 	      }
 	      struct rtp_header rtp;
@@ -262,7 +262,14 @@ void *decode_task(void *arg){
 
 
 int main(int argc,char *argv[]){
+  // Drop root if we have it
+  if(seteuid(getuid()) != 0)
+    fprintf(stderr,"seteuid: %s\n",strerror(errno));
+
   setlocale(LC_ALL,getenv("LANG"));
+  // Unlike aprs and aprsfeed, stdout is not line buffered because each packet
+  // generates a multi-line dump. So we have to be sure to fflush(stdout) after each
+  // packet in case we're redirected into a file
 
   int c;
   Mcast_ttl = 10; // Low intensity, higher default is OK
@@ -366,7 +373,8 @@ int main(int argc,char *argv[]){
       if(sp == NULL){
 	// Not found
 	if((sp = make_session(&sender,rtp.ssrc)) == NULL){
-	  fprintf(stderr,"No room for new session!!\n");
+	  fprintf(stdout,"No room for new session!!\n");
+	  fflush(stdout);
 	  continue;
 	}
 	getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
@@ -374,8 +382,10 @@ int main(int argc,char *argv[]){
 	sp->input_pointer = 0;
 	sp->filter_in = create_filter_input(AL,AM,REAL);
 	pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
-	if(Verbose)
-	  fprintf(stderr,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
+	if(Verbose){
+	  fprintf(stdout,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
+	  fflush(stdout);
+	}
       }
       int sample_count = size / sizeof(signed short); // 16-bit sample count
       int skipped_samples = rtp_process(&sp->rtp_state,&rtp,sample_count);

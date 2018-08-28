@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.40 2018/08/04 22:20:08 karn Exp $
+// $Id: funcube.c,v 1.46 2018/08/27 21:41:14 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -11,6 +11,7 @@
 #include <math.h>
 #include <complex.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <portaudio.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -23,6 +24,9 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <syslog.h>
+#include <errno.h>
 
 #include "fcd.h"
 #include "sdr.h"
@@ -52,7 +56,6 @@ struct sdrstate {
 
 int ADC_samprate = 192000;
 float const SCALE16 = 1./SHRT_MAX;
-int Verbose;
 int No_hold_open; // if set, close control between commands
 float const DC_alpha = 1.0e-6;  // high pass filter coefficient for DC offset estimates, per sample
 float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
@@ -62,16 +65,19 @@ float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and
 // So to minimize latency, make this a common denominator:
 // 240 samples @ 16 bit stereo = 960 bytes/packet; at 192 kHz, this is 1.25 ms (800 pkt/sec)
 int Blocksize = 240;
-int Dongle = 0;
+int Device = 0;
 char *Locale;
 double Calibration = 0;
+int Daemonize;
+uint32_t Ssrc;
 
+char *Rundir = "/run/funcube";
 
 void *fcd_command(void *arg);
 int process_fc_command(char *,int);
 double set_fc_LO(double);
 double fcd_actual(unsigned int u32Freq);
-int front_end_init(int dongle, int samprate,int L);
+int front_end_init(int device, int samprate,int L);
 int get_adc(short *buffer,const int L);
 void *display(void *arg);
 
@@ -83,8 +89,28 @@ pthread_t FCD_control_thread;
 pthread_t Display_thread;
 pthread_t AGC_thread;
 int Overflows;
+FILE *Status;
+char *Status_filename;
+char *Pid_filename;
+
 
 void *agc(void *arg);
+
+void errmsg(const char *fmt,...){
+  va_list ap;
+
+  va_start(ap,fmt);
+
+  if(Daemonize)
+    vsyslog(LOG_INFO,fmt,ap);
+  else {
+    vfprintf(stderr,fmt,ap);
+    fflush(stderr);
+  }
+  va_end(ap);
+}
+
+
 
 int main(int argc,char *argv[]){
   // if we have root, up our priority and drop privileges
@@ -94,9 +120,9 @@ int main(int argc,char *argv[]){
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
-    perror("seteuid");
+    fprintf(stderr,"seteuid: %s\n",strerror(errno));
 
-  char *dest = "239.1.2.1"; // Default for testing
+  char *dest = NULL;
 
   Locale = getenv("LANG");
   if(Locale == NULL || strlen(Locale) == 0)
@@ -105,8 +131,12 @@ int main(int argc,char *argv[]){
   int c;
   int List_audio = 0;
 
-  while((c = getopt(argc,argv,"c:d:vp:l:b:oR:T:LI:")) != EOF){
+  while((c = getopt(argc,argv,"dc:vl:b:oR:T:LI:S:")) != -1){
     switch(c){
+    case 'd':
+      Daemonize++;
+      Status = NULL;
+      break;
     case 'L':
       List_audio++;
       break;
@@ -119,11 +149,12 @@ int main(int argc,char *argv[]){
     case 'o':
       No_hold_open++; // Close USB control port between commands so fcdpp can be used
       break;
-    case 'd':
-      Dongle = strtol(optarg,NULL,0);
+    case 'I':
+      Device = strtol(optarg,NULL,0);
       break;
     case 'v':
-      Verbose++;
+      if(!Daemonize)
+	Status = stderr; // Could be overridden by status file argument below
       break;
     case 'l':
       Locale = optarg;
@@ -134,41 +165,121 @@ int main(int argc,char *argv[]){
     case 'T':
       Mcast_ttl = strtol(optarg,NULL,0);
       break;
+    case 'S':
+      Ssrc = strtol(optarg,NULL,0);
+      break;
+    default:
+    case '?':
+      fprintf(stderr,"Unknown argument %c\n",c);
+      exit(1);
+      break;
     }
   }
   setlocale(LC_ALL,Locale);
-  Pa_Initialize();
+
   if(List_audio){
     // On stdout, not stderr, so we can toss ALSA's noisy error messages
+    Pa_Initialize();
     int numDevices = Pa_GetDeviceCount();
     printf("%d Audio devices:\n",numDevices);
     for(int inDevNum=0; inDevNum < numDevices; inDevNum++){
       const PaDeviceInfo *deviceInfo = Pa_GetDeviceInfo(inDevNum);
       printf("%d: %s\n",inDevNum,deviceInfo->name);
     }
+    Pa_Terminate();
     exit(0);
   }
+  if(dest == NULL){
+    errmsg("Must specify -R output_address\n");
+    exit(1);
+  }
 
+  if(Daemonize){
 
-  if(Verbose)
-    fprintf(stderr,"funcube dongle %d: blocksize %d\n",Dongle,Blocksize);
+    if(daemon(0,0) != 0)
+      exit(1);
 
+    openlog("funcube",LOG_PID,LOG_DAEMON);
+    struct stat statbuf;
+    if(stat(Rundir,&statbuf) == -1){
+      if(mkdir(Rundir,0775) != 0) // Ensure it exists, let everybody read it
+	errmsg("Can't mkdir %s: %s\n",Rundir,strerror(errno));
+    } else if(!(statbuf.st_mode & S_IFDIR)){
+      errmsg("%s already exists as non-directory\n",Rundir);
+    }
+    // see if one is already running
+    int r = asprintf(&Pid_filename,"%s/%d.pid",Rundir,Device);
+    if(r == -1){
+      // Unlikely, but it makes the compiler happy
+      errmsg("asprintf error");
+      exit(1);
+    }
+    FILE *pidfile = fopen(Pid_filename,"r");
+    if(pidfile){
+      // pid file exists; read it and see if process exists
+      int pid = 0;
+      if(fscanf(pidfile,"%d",&pid) == 1 && (kill(pid,0) == 0 || errno != ESRCH)){
+	// Already running; exit
+	fclose(pidfile);
+	errmsg("pid %d: daemon %d already running, quitting",getpid(),pid);
+	exit(1);
+      }
+      fclose(pidfile); pidfile = NULL;
+    }
+    unlink(Pid_filename); // Remove any orphan
+    pidfile = fopen(Pid_filename,"w");
+    if(pidfile){
+      int pid = getpid();
+      fprintf(pidfile,"%d\n",pid);
+      fclose(pidfile);
+    }
+    r = asprintf(&Status_filename,"%s/%d.status",Rundir,Device);
+    if(r == -1){
+      // Unlikely, but it makes the compiler happy
+      errmsg("asprintf error");
+      exit(1);
+    }
+
+    unlink(Status_filename); // Remove any orphaned version
+    Status = fopen(Status_filename,"w");
+    if(Status == NULL){
+      errmsg("Can't write %s: %s\n",Status_filename,strerror(errno));
+    }
+    if(Status)
+      setlinebuf(Status);
+  }
+
+  // Catch signals so portaudio can be shut down
+#if 0
+  for(int i=1;i<32;i++)
+    signal(i,closedown);
+#else
+  signal(SIGPIPE,SIG_IGN);
+  signal(SIGINT,closedown);
+  signal(SIGKILL,closedown);
+  signal(SIGQUIT,closedown);
+  signal(SIGTERM,closedown);        
+  signal(SIGBUS,closedown);
+  signal(SIGSEGV,closedown);
+#endif
+
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Ssrc,Status_filename);
 
   // Load/save calibration file
   {
     char *calfilename = NULL;
     
-    if(asprintf(&calfilename,"%s/.radiostate/cal-funcube-%d",getenv("HOME"),Dongle) > 0){
+    if(asprintf(&calfilename,"/var/local/lib/radiostate/cal-funcube-%d",Device) > 0){
       FILE *calfp = NULL;
       if(Calibration == 0){
 	if((calfp = fopen(calfilename,"r")) != NULL){
 	  if(fscanf(calfp,"%lg",&Calibration) < 1){
-	    fprintf(stderr,"Can't read calibration from %s\n",calfilename);
+	    errmsg("Can't read calibration from %s\n",calfilename);
 	  }
 	}
       } else {
 	if((calfp = fopen(calfilename,"w")) != NULL){
-	  fprintf(calfp,"%.6lg",Calibration);
+	  fprintf(calfp,"%.6lg\n",Calibration);
 	}
       }
       if(calfp)
@@ -176,12 +287,11 @@ int main(int argc,char *argv[]){
       free(calfilename);
     }
   }
-  
-
   // Set up RTP output socket
+  usleep(2000000);
   Rtp_sock = setup_mcast(dest,1);
   if(Rtp_sock == -1){
-    perror("Can't create multicast socket");
+    errmsg("Can't create multicast socket: %s\n",strerror(errno));
     exit(1);
   }
     
@@ -192,7 +302,7 @@ int main(int argc,char *argv[]){
   struct sockaddr_in ctl_sockaddr;
   socklen_t siz = sizeof(ctl_sockaddr);
   if(getsockname(Rtp_sock,(struct sockaddr *)&ctl_sockaddr,&siz) == -1){
-    perror("getsockname on ctl port");
+    errmsg("getsockname on ctl port: %s\n",strerror(errno));
     exit(1);
   }
   struct sockaddr_in locsock;
@@ -201,30 +311,24 @@ int main(int argc,char *argv[]){
   locsock.sin_addr.s_addr = INADDR_ANY;
   bind(Ctl_sock,(struct sockaddr *)&locsock,sizeof(locsock));
 
-  // Catch signals so portaudio can be shut down
-  signal(SIGPIPE,SIG_IGN);
-  signal(SIGINT,closedown);
-  signal(SIGKILL,closedown);
-  signal(SIGQUIT,closedown);
-  signal(SIGTERM,closedown);        
-
-  if(front_end_init(Dongle,ADC_samprate,Blocksize) < 0){
-    fprintf(stderr,"front_end_init(%d,%d,%d) failed\n",
-	    Dongle,ADC_samprate,Blocksize);
+  Pa_Initialize();
+  if(front_end_init(Device,ADC_samprate,Blocksize) < 0){
+    errmsg("front_end_init(%d,%d,%d) failed\n",
+	    Device,ADC_samprate,Blocksize);
     exit(1);
   }
 
   pthread_create(&FCD_control_thread,NULL,fcd_command,&FCD);
   pthread_create(&AGC_thread,NULL,agc,NULL);
 
-  if(Verbose > 1)
+  if(Status)
     pthread_create(&Display_thread,NULL,display,NULL);
 
-  time_t tt;
-  time(&tt);
-  long ssrc;
-  ssrc = tt & 0xffffffff; // low 32 bits of clock time
-
+  if(Ssrc == 0){
+    time_t tt;
+    time(&tt);
+    Ssrc = tt & 0xffffffff; // low 32 bits of clock time
+  }
   int timestamp = 0;
   int seq = 0;
   // Gain and phase corrections. These will be updated every block
@@ -238,12 +342,13 @@ int main(int argc,char *argv[]){
   FCD.status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
 
   float rate_factor = Blocksize/(ADC_samprate * Power_alpha);
+
   while(1){
     struct rtp_header rtp;
     memset(&rtp,0,sizeof(rtp));
     rtp.version = RTP_VERS;
     rtp.type = IQ_PT;         // ordinarily dynamically allocated
-    rtp.ssrc = ssrc;
+    rtp.ssrc = Ssrc;
     rtp.seq = seq++;
     rtp.timestamp = timestamp;
 
@@ -293,10 +398,9 @@ int main(int argc,char *argv[]){
       //sampbuf[i+1] = round(cimagf(samp));
     }
     if(send(Rtp_sock,buffer,dp - buffer,0) == -1){
-      perror("send");
+      errmsg("send: %s\n",strerror(errno));
       // If we're sending to a unicast address without a listener, we'll get ECONNREFUSED
       // Sleep 1 sec to slow down the rate of these messages
-      usleep(1000000);
     }
     timestamp += Blocksize;
 
@@ -333,26 +437,25 @@ int main(int argc,char *argv[]){
 }
 
 
-int front_end_init(int dongle, int samprate,int L){
+int front_end_init(int device, int samprate,int L){
   int r = 0;
 
   FCD.status.samprate = samprate;
 
-  if((FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),dongle)) == NULL){
-    perror("fcdOpen()");
+  if((FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),device)) == NULL){
+    errmsg("fcdOpen(%s): %s\n",FCD.sdr_name,strerror(errno));
     return -1;
   }
   if((r = fcdGetMode(FCD.phd)) == FCD_MODE_APP){
     char caps_str[100];
     fcdGetCapsStr(FCD.phd,caps_str);
-    if(Verbose)
-      fprintf(stderr,"audio device name '%s', caps '%s'\n",FCD.sdr_name,caps_str);
+    errmsg("audio device name '%s', caps '%s'\n",FCD.sdr_name,caps_str);
   } else if(r == FCD_MODE_NONE){
-    fprintf(stderr," No FCD detected!\n");
+    errmsg(" No FCD detected!\n");
     r = -1;
     goto done;
   } else if (r == FCD_MODE_BL){
-    fprintf(stderr," is in bootloader mode\n");
+    errmsg(" is in bootloader mode\n");
     r = -1;
     goto done;
   }
@@ -364,13 +467,12 @@ int front_end_init(int dongle, int samprate,int L){
     const PaDeviceInfo *deviceInfo = Pa_GetDeviceInfo(i);
     if(strstr(deviceInfo->name,FCD.sdr_name) != NULL){
       inDevNum = i;
-      if(Verbose)
-	fprintf(stderr,"portaudio name: %s\n",deviceInfo->name);
+      errmsg("portaudio name: %s\n",deviceInfo->name);
       break;
     }
   }
   if(inDevNum == paNoDevice){
-    fprintf(stderr,"Can't find portaudio name\n");
+    errmsg("Can't find portaudio name\n");
     r = -1;
     goto done;
   }
@@ -384,7 +486,7 @@ int front_end_init(int dongle, int samprate,int L){
 		    paFramesPerBufferUnspecified, 0, NULL, NULL);
 
   if(r < 0){
-    perror("error opening PCM device");
+    errmsg("error opening PCM device: %s\n",strerror(errno));
     r = -1;
     goto done;
   }
@@ -420,14 +522,14 @@ void *fcd_command(void *arg){
     timeout.tv_usec = 0;
     r = select(Ctl_sock+1,&fdset,NULL,NULL,&timeout);
     if(r == -1){
-      perror("select");
+      errmsg("select: %s\n",strerror(errno));
       sleep(50000); // don't loop tightly
       continue;
     } else if(r == 0){
       // Timeout: poll the FCD for its current state, in case it
       // has changed independently, e.g., from fcdctl command
-      if(FCD.phd == NULL && (FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),Dongle)) == NULL){
-	perror("funcube: can't re-open control port");
+      if(FCD.phd == NULL && (FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),Device)) == NULL){
+	errmsg("can't re-open control port: %s\n",strerror(errno));
 	sleep(50000);
 	continue;
       }
@@ -457,7 +559,7 @@ void *fcd_command(void *arg){
 		     sizeof(requested_status),0,
 		     (struct sockaddr *)&command_address,&addrlen)) <= 0){
       if(r < 0)
-	perror("recv");
+	errmsg("recv: %s\n",strerror(errno));
       sleep(50000); // don't loop tightly
       continue;
     }
@@ -465,8 +567,8 @@ void *fcd_command(void *arg){
     if(r < sizeof(requested_status))
       continue; // Too short; ignore
     
-    if(FCD.phd == NULL && (FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),Dongle)) == NULL){
-      perror("funcube: can't re-open control port, aborting");
+    if(FCD.phd == NULL && (FCD.phd = fcdOpen(FCD.sdr_name,sizeof(FCD.sdr_name),Device)) == NULL){
+      errmsg("can't re-open control port: %s\n",strerror(errno));
       abort();
     }      
 
@@ -474,7 +576,7 @@ void *fcd_command(void *arg){
     if(requested_status.lna_gain != 0xff && FCD.status.lna_gain != requested_status.lna_gain){
       FCD.status.lna_gain = requested_status.lna_gain;
 #if 0
-      fprintf(stderr,"lna %s\n",FCD.status.lna_gain ? "ON" : "OFF");
+      errmsg("lna %s\n",FCD.status.lna_gain ? "ON" : "OFF");
 #endif
       unsigned char val = FCD.status.lna_gain ? 1 : 0;
       fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&val,sizeof(val));
@@ -482,7 +584,7 @@ void *fcd_command(void *arg){
     if(requested_status.mixer_gain != 0xff && FCD.status.mixer_gain != requested_status.mixer_gain){
       FCD.status.mixer_gain = requested_status.mixer_gain;
 #if 0
-      fprintf(stderr,"mixer %s\n",FCD.status.mixer_gain ? "ON" : "OFF");
+      errmsg("mixer %s\n",FCD.status.mixer_gain ? "ON" : "OFF");
 #endif
       unsigned char val = FCD.status.mixer_gain ? 1 : 0;
       fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&val,sizeof(val));
@@ -490,14 +592,14 @@ void *fcd_command(void *arg){
     if(requested_status.if_gain != 0xff && FCD.status.if_gain != requested_status.if_gain){
       FCD.status.if_gain = requested_status.if_gain;
 #if 0
-      fprintf(stderr,"IF gain %d db\n",FCD.status.if_gain);
+      errmsg("IF gain %d db\n",FCD.status.if_gain);
 #endif
       fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_IF_GAIN1,&FCD.status.if_gain,sizeof(FCD.status.if_gain));
     }
     if(requested_status.frequency > 0 && FCD.status.frequency != requested_status.frequency){
       
 #if 0
-      fprintf(stderr,"tuner frequency %lf\n",requested_status.frequency);
+      errmsg("tuner frequency %lf\n",requested_status.frequency);
 #endif
       FCD.intfreq = round(requested_status.frequency/ (1 + Calibration));
       // LNA gain is frequency-dependent
@@ -521,16 +623,27 @@ void *fcd_command(void *arg){
 // Status display thread
 void *display(void *arg){
   pthread_setname("funcube-disp");
+  off_t stat_point;
+  char eol;
+  long messages = 0;
 
-  fprintf(stderr,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|           Overflows\n");
-  fprintf(stderr,"Frequency      LNA  mixer bband          RF   A/D   Out     DC-I   DC-Q  phase  gain                        TCXO\n");
-  fprintf(stderr,"Hz                                           dBFS  dBFS                    deg    dB                         ppm\n");   
+  fprintf(Status,"funcube daemon pid %d device %d\n",getpid(),Device);
+  fprintf(Status,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|           Overflows                messages\n");
+  fprintf(Status,"Frequency      LNA  mixer bband          RF   A/D   Out     DC-I   DC-Q  phase  gain                        TCXO\n");
+  fprintf(Status,"Hz                                           dBFS  dBFS                    deg    dB                         ppm\n");   
+
+  stat_point = ftello(Status); // Current offset if file, -1 if terminal
+
+  // End lines with return when writing to terminal, newlines when writing to status file
+  eol = stat_point == -1 ? '\r' : '\n';
 
   while(1){
     //    float powerdB = 10*log10f(FCD.in_power) - 90.308734;
     float powerdB = 10*log10f(FCD.in_power);
 
-    fprintf(stderr,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    %8.4lf\r",
+    if(stat_point != -1)
+      fseeko(Status,stat_point,SEEK_SET);
+    fprintf(Status,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    %8.4lf%'10ld%c",
 	    FCD.status.frequency,
 	    FCD.status.lna_gain,	    
 	    FCD.status.mixer_gain,
@@ -543,8 +656,12 @@ void *display(void *arg){
 	    (180/M_PI) * asin(FCD.sinphi),
 	    10*log10(FCD.imbalance),
 	    Overflows,
-	    Calibration * 1e6
+	    Calibration * 1e6,
+	    messages,
+	    eol
 	    );
+    messages++;
+    fflush(Status);
     usleep(100000);
   }    
 
@@ -556,13 +673,15 @@ void *display(void *arg){
 // If we don't stop the A/D, it'll take several seconds to overflow and stop by itself,
 // and during that time we can't restart
 void closedown(int a){
-  if(Verbose)
-    fprintf(stderr,"funcube: caught signal %d: %s\n",a,strsignal(a));
+  errmsg("funcube: caught signal %d: %s\n",a,strsignal(a));
+  unlink(Pid_filename);
   Pa_Terminate();
+  if(a == SIGTERM) // sent by systemd when shutting down. Return success
+    exit(0);
 
   exit(1);
 }
-// The funcube dongle uses the Mirics MSi001 tuner. It has a fractional N synthesizer that can't actually do integer frequency steps.
+// The funcube device uses the Mirics MSi001 tuner. It has a fractional N synthesizer that can't actually do integer frequency steps.
 // This formula is hacked down from code from Howard Long; it's what he uses in the firmware so I can figure out
 // the *actual* frequency. Of course, we still have to correct it for the TCXO offset.
 

@@ -1,4 +1,4 @@
-# $Id: Makefile.osx,v 1.51 2018/08/04 22:20:40 karn Exp $
+# $Id: Makefile.osx,v 1.52 2018/08/26 18:20:39 karn Exp $
 CFLAGS=-g -O3 -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
@@ -105,6 +105,6 @@ doppler.o: doppler.c radio.h sdr.h misc.h
 fm.o: fm.c misc.h filter.h radio.h sdr.h 
 hackrf.o: hackrf.c sdr.h radio.h misc.h multicast.h decimate.h
 linear.o: linear.c misc.h filter.h radio.h sdr.h 
-main.o: main.c radio.h sdr.h filter.h misc.h  multicast.h
+main.o: main.c radio.h sdr.h filter.h misc.h  multicast.h dsp.h
 misc.o: misc.c radio.h sdr.h
 modes.o: modes.c radio.h sdr.h misc.h

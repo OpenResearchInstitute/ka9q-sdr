@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.116 2018/07/11 06:57:11 karn Exp $
+// $Id: main.c,v 1.117 2018/08/26 18:16:49 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -48,6 +48,7 @@ char Statepath[PATH_MAX];
 char Locale[256] = "en_US.UTF-8";
 int Update_interval = 100;  // 100 ms between screen updates
 int SDR_correct = 0;
+uint32_t Ssrc = 0;
 
 void audio_cleanup(void *);
 
@@ -130,8 +131,8 @@ int main(int argc,char *argv[]){
   set_shift(demod,0);
 
   // Find any file argument and load it
-  char optstring[] = "cd:f:I:k:l:L:m:M:r:R:qs:t:T:u:v";
-  while(getopt(argc,argv,optstring) != EOF)
+  char optstring[] = "cd:f:I:k:l:L:m:M:r:R:qs:t:T:u:vS:";
+  while(getopt(argc,argv,optstring) != -1)
     ;
   if(argc > optind)
     loadstate(demod,argv[optind]);
@@ -197,6 +198,9 @@ int main(int argc,char *argv[]){
       break;
     case 'v':   // Extra debugging
       Verbose++;
+      break;
+    case 'S':   // Set SSRC on output stream
+      Ssrc = strtol(optarg,NULL,0);
       break;
     default:
       fprintf(stderr,"Usage: %s [-d doppler_command] [-f frequency] [-I iq multicast address] [-k kaiser_beta] [-l locale] [-L blocksize] [-m mode] [-M FIRlength] [-q] [-R Audio multicast address] [-s shift offset] [-t threads] [-u update_ms] [-v]\n",argv[0]);

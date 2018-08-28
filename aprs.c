@@ -1,4 +1,4 @@
-// $Id: aprs.c,v 1.15 2018/07/31 11:25:20 karn Exp $
+// $Id: aprs.c,v 1.16 2018/08/06 06:29:26 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
 // INCOMPLETE, doesn't yet drive antenna rotors
 // Should also use RTP for AX.25 frames
@@ -41,6 +41,8 @@ char *parse_mice_position(struct ax25_frame *frame,char *data,double *latitude, 
 
 int main(int argc,char *argv[]){
   setlocale(LC_ALL,getenv("LANG"));
+  setlinebuf(stdout);
+
   double latitude,longitude,altitude;
 
 #if 0
@@ -84,19 +86,19 @@ int main(int argc,char *argv[]){
       Mcast_address_text = optarg;
       break;
     default:
-      fprintf(stderr,"Usage: %s [-L latitude] [-M longitude] [-A altitude] [-s sourcecall] [-v] [-I mcast_address]\n",argv[0]);
-      fprintf(stderr,"Defaults: %s -L %lf -M %lf -A %lf -s %s -I %s\n",argv[0],
+      fprintf(stdout,"Usage: %s [-L latitude] [-M longitude] [-A altitude] [-s sourcecall] [-v] [-I mcast_address]\n",argv[0]);
+      fprintf(stdout,"Defaults: %s -L %lf -M %lf -A %lf -s %s -I %s\n",argv[0],
 	      latitude,longitude,altitude,Source,Mcast_address_text);
       exit(1);
     }
   }
-  printf("APRS az/el program by KA9Q\n");
+  fprintf(stdout,"APRS az/el program by KA9Q\n");
   if(Source){
-    printf("Watching for %s\n",Source);
+    fprintf(stdout,"Watching for %s\n",Source);
   } else {
-    printf("Watching all stations\n");
+    fprintf(stdout,"Watching all stations\n");
   }
-  printf("Station coordinates: latitude %.6lf deg; longitude %.6lf deg; altitude %.1lf m\n",
+  fprintf(stdout,"Station coordinates: latitude %.6lf deg; longitude %.6lf deg; altitude %.1lf m\n",
 	 latitude,longitude,altitude);
 
   // Station position in earth-centered ROTATING coordinate system
@@ -134,14 +136,12 @@ int main(int argc,char *argv[]){
   // Set up multicast input
   Input_fd = setup_mcast(Mcast_address_text,0);
   if(Input_fd == -1){
-    fprintf(stderr,"Can't set up input from %s\n",
+    fprintf(stdout,"Can't set up input from %s\n",
 	    Mcast_address_text);
     exit(1);
   }
   unsigned char packet[2048];
   int pktlen;
-
-  setlinebuf(stdout);
 
   while((pktlen = recv(Input_fd,packet,sizeof(packet),0)) > 0){
     struct rtp_header rtp_header;
@@ -165,13 +165,13 @@ int main(int argc,char *argv[]){
     struct tm *tmp;
     time(&t);
     tmp = gmtime(&t);
-    printf("%d %s %04d %02d:%02d:%02d UTC",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
+    fprintf(stdout,"%d %s %04d %02d:%02d:%02d UTC",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
 	   tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
     
-    printf(" ssrc %x seq %d",rtp_header.ssrc,rtp_header.seq);
-    printf(" %s:",frame.source);
+    fprintf(stdout," ssrc %x seq %d",rtp_header.ssrc,rtp_header.seq);
+    fprintf(stdout," %s:",frame.source);
     if(frame.control != 0x03 || frame.type != 0xf0){
-      printf(" Invalid ax25 type");
+      fprintf(stdout," Invalid ax25 type");
       goto done;
     }
     frame.information[frame.info_len] = '\0'; // Ensure termination
@@ -204,7 +204,7 @@ int main(int argc,char *argv[]){
       data++;
       if(*data == '!'){
 	// Weather data, not position
-	printf(" %s",frame.information);
+	fprintf(stdout," %s",frame.information);
 	goto done;
       }
       data = parse_position(data,&latitude,&longitude,&altitude);
@@ -217,24 +217,24 @@ int main(int argc,char *argv[]){
     case '$': // NMEA sentence (to be implemented)
     default:
       // Status, telemetry, etc
-      printf(" %s",frame.information);
+      fprintf(stdout," %s",frame.information);
       goto done; // No more processing
     }
     if(days != -1 || hours != -1 || minutes != -1 || seconds != -1)
-      printf(" %d %02d:%02d:%02d;",days,hours,minutes,seconds);
+      fprintf(stdout," %d %02d:%02d:%02d;",days,hours,minutes,seconds);
 
 
     if(!isnan(latitude) && !isnan(longitude)){
-      printf(" Lat %.6lf Long %.6lf",latitude,longitude);
+      fprintf(stdout," Lat %.6lf Long %.6lf",latitude,longitude);
 
       int altitude_known = 0;
       if(!isnan(altitude)){
 	altitude_known = 1;
-	printf(" Alt %.1lf m",altitude);
+	fprintf(stdout," Alt %.1lf m",altitude);
       } else
 	altitude = 0;
 
-      putchar(';');
+      fputc(';',stdout);
       double target_x,target_y,target_z;
       {
 	double sinlat,coslat;
@@ -261,14 +261,14 @@ int main(int argc,char *argv[]){
       double azimuth = M_PI - atan2(east,south);
       
       if(altitude_known)
-	printf(" az %.1lf elev %.1lf range %'.1lf m",
+	fprintf(stdout," az %.1lf elev %.1lf range %'.1lf m",
 	       azimuth*DEGPRA, elevation*DEGPRA,range);
       else
-	printf(" az %.1lf range %'.1lf m",
+	fprintf(stdout," az %.1lf range %'.1lf m",
 	       azimuth*DEGPRA, range);
     }
   done:;
-    putchar('\n');
+    fputc('\n',stdout);
   }
 }  
 char *parse_timestamp(char *data,int *days,int *hours, int *minutes, int *seconds){

@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.111 2018/08/04 22:21:23 karn Exp $
+# $Id: Makefile,v 1.114 2018/08/28 21:48:41 karn Exp $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 #COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
@@ -7,12 +7,19 @@ LIBDIR=/usr/local/share/ka9q-radio
 LDLIBS=-lpthread -lbsd -lm
 EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend radio 
 AFILES=bandplan.txt help.txt modes.txt
+SYSTEMD_FILES=funcube0.service funcube1.service hackrf0.service
+UDEV_FILES=66-hackrf.rules 69-funcube-ka9q.rules
 
-all: $(EXECS) $(AFILES)
+all: $(EXECS) $(AFILES) $(SYSTEMD_FILES) $(UDEV_FILES)
 
 install: all
 	install -o root -m 04755 -D --target-directory=$(BINDIR) $(EXECS)
 	install -D --target-directory=$(LIBDIR) $(AFILES)
+	install -o root -m 0644 -D --target-directory=/etc/systemd/system $(SYSTEMD_FILES)
+	install -o root -m 0644 -D --target-directory=/etc/udev/rules.d $(UDEV_FILES)
+	adduser --system aprsfeed
+	adduser --system funcube
+	adduser --system hackrf
 
 clean:
 	rm -f *.o *.a $(EXECS)

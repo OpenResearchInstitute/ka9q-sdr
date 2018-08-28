@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.25 2018/08/04 21:06:16 karn Exp $
+// $Id: multicast.c,v 1.28 2018/08/26 07:29:26 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -13,10 +13,15 @@
 
 int Mcast_ttl = 1;
 
-
 // Set options on multicast socket
 static void soptions(int fd){
   // Failures here are not fatal
+#if defined(linux)
+  int freebind = 1;
+  if(setsockopt(fd,IPPROTO_IP,IP_FREEBIND,&freebind,sizeof(freebind)) != 0)
+    perror("freebind failed");
+#endif
+
   int reuse = 1;
   if(setsockopt(fd,SOL_SOCKET,SO_REUSEPORT,&reuse,sizeof(reuse)) != 0)
     perror("so_reuseport failed");
@@ -98,7 +103,13 @@ int setup_mcast(char const *target,int output){
 
   struct addrinfo *results = NULL;
   int ecode;
-  if((ecode = getaddrinfo(host,port,&hints,&results)) != 0){
+  // Try a few times in case we come up before the resolver is quite ready
+  for(int tries=0; tries < 10; tries++){
+    if((ecode = getaddrinfo(host,port,&hints,&results)) == 0)
+      break;
+    usleep(500000);
+  }    
+  if(ecode != 0){
     fprintf(stderr,"setup_mcast getaddrinfo(%s,%s): %s\n",host,port,gai_strerror(ecode));
     return -1;
   }
@@ -107,17 +118,28 @@ int setup_mcast(char const *target,int output){
   for(resp = results; resp != NULL; resp = resp->ai_next){
     if((fd = socket(resp->ai_family,resp->ai_socktype,resp->ai_protocol)) < 0)
       continue;
+
     soptions(fd);
     if(output){
-      if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	break;
+      // Try up to 10 times
+      // this connect can fail with an unreachable when brought up by systemd at boot
+      // multicast 
+      for(int tries=0; tries < 10; tries++){
+	if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	  goto done;
+	usleep(500000);
+      }
     } else { // input
-      if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	break;
+      for(int tries=0; tries < 10; tries++){
+	if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	  goto done;
+	usleep(500000);
+      }
     }
     close(fd);
     fd = -1;
   }
+  done:;
   // Strictly speaking, it is not necessary to join a multicast group to which we only send.
   // But this creates a problem with brain-dead Netgear (and probably other) "smart" switches
   // that do IGMP snooping. There's a setting to handle what happens with multicast groups

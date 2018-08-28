@@ -1,4 +1,4 @@
-// $Id: iqrecord.c,v 1.18 2018/07/06 06:06:12 karn Exp $
+// $Id: iqrecord.c,v 1.18 2018/07/06 06:06:12 karn Exp karn $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
 // Copyright 2018 Phil Karn, KA9Q
@@ -59,6 +59,7 @@ struct session {
 };
 
 int Quiet;
+double Duration = INFINITY;
 char IQ_mcast_address_text[256];
 struct sockaddr Sender;
 struct sockaddr Input_mcast_sockaddr;
@@ -100,7 +101,7 @@ int main(int argc,char *argv[]){
   // Defaults
   Quiet = 0;
   int c;
-  while((c = getopt(argc,argv,"I:l:q")) != EOF){
+  while((c = getopt(argc,argv,"I:l:qd:")) != EOF){
     switch(c){
     case 'I':
       strlcpy(IQ_mcast_address_text,optarg,sizeof(IQ_mcast_address_text));
@@ -110,6 +111,9 @@ int main(int argc,char *argv[]){
       break;
     case 'q':
       Quiet++; // Suppress display
+      break;
+    case 'd':
+      Duration = strtod(optarg,NULL);
       break;
     default:
       fprintf(stderr,"Usage: %s -I iq multicast address [-l locale] [-q]\n",argv[0]);
@@ -160,7 +164,9 @@ void input_loop(){
   char filename[PATH_MAX];
   memset(filename,0,sizeof(filename));
 
-  while(1){
+  double t = 0;
+
+  while(!isfinite(Duration) || t < Duration){
     // Receive I/Q data from front end
     unsigned char buffer[MAXPKT];
     socklen_t socksize = sizeof(Sender);
@@ -304,6 +310,7 @@ void input_loop(){
     if(offset)
       fseeko(sp->fp,offset,SEEK_CUR);
     fwrite(samples,1,size,sp->fp);
+    t += (double)sample_count / sp->samprate;
   }
 }
  

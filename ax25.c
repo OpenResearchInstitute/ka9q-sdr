@@ -1,4 +1,4 @@
-// $Id: ax25.c,v 1.6 2018/07/11 07:01:35 karn Exp $
+// $Id: ax25.c,v 1.7 2018/08/06 06:29:26 karn Exp $
 // AX.25 frame header decoding (this takes me wayyyyy back)
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -35,7 +35,7 @@ char *get_callsign(char *result,unsigned char *in){
 // show currently transmitting station in UPPER CASE
 // show type and control field
 // dump entire frame in hex/ascii
-int dump_frame(unsigned char *frame,int bytes){
+int dump_frame(FILE *stream,unsigned char *frame,int bytes){
 
   // By default, no digipeaters; will update if there are any
   unsigned char *control = frame + 14;
@@ -65,15 +65,15 @@ int dump_frame(unsigned char *frame,int bytes){
     if(c == ' ')
       break;
     if(this_transmitter == 1)
-      putchar(toupper(c));
+      fputc(toupper(c),stream);
     else
-      putchar(tolower(c));
+      fputc(tolower(c),stream);
   }
   int ssid = (frame[13] >> 1) & 0xf; // SSID
   if(ssid > 0)
-    printf("-%d",ssid);
+    fprintf(stream,"-%d",ssid);
   
-  printf(" -> ");
+  fprintf(stream," -> ");
   
   // List digipeaters
 
@@ -86,14 +86,14 @@ int dump_frame(unsigned char *frame,int bytes){
 	  break;
 	
 	if(this_transmitter == 2+i)
-	  putchar(toupper(c));
+	  fputc(toupper(c),stream);
 	else
-	  putchar(tolower(c));
+	  fputc(tolower(c),stream);
       }
       int ssid = frame[14 + 7*i + 6];
       if(ssid > 0)
-	printf("-%d",(ssid>> 1) & 0xf); // SSID
-      printf(" -> ");
+	fprintf(stream,"-%d",(ssid>> 1) & 0xf); // SSID
+      fprintf(stream," -> ");
       if(ssid  & 0x1){ // Last one
 	control = frame + 14 + 7*i + 7;
 	break;
@@ -105,33 +105,33 @@ int dump_frame(unsigned char *frame,int bytes){
     char c = (frame[n] >> 1) & 0x7f;
     if(c == ' ')
       break;
-    putchar(tolower(c));
+    fputc(tolower(c),stream);
   }
   ssid = (frame[6] >> 1) & 0xf; // SSID
   if(ssid > 0)
-    printf("-%d",ssid);
+    fprintf(stream,"-%d",ssid);
 
   // Type field
-  printf("; control = %02x",*control++ & 0xff);
-  printf("; type = %02x\n",*control & 0xff);
+  fprintf(stream,"; control = %02x",*control++ & 0xff);
+  fprintf(stream,"; type = %02x\n",*control & 0xff);
 
   for(int i = 0; i < bytes; i++){
-    printf("%02x ",frame[i] & 0xff);
+    fprintf(stream,"%02x ",frame[i] & 0xff);
     if((i % 16) == 15 || i == bytes-1){
       for(int k = (i % 16); k < 15; k++)
-	printf("   "); // blanks as needed in last line
+	fprintf(stream,"   "); // blanks as needed in last line
 
-      printf(" |  ");
+      fprintf(stream," |  ");
       for(int k=(i & ~0xf );k <= i; k++){
 	if(frame[k] >= 0x20 && frame[k] < 0x7e)
-	  putchar(frame[k]);
+	  fputc(frame[k],stream);
 	else
-	  putchar('.');
+	  fputc('.',stream);
       }
-      printf("\n");
+      fputc('\n',stream);
     }
   }
-  printf("\n");
+  fputc('\n',stream);
   return 0;
 }
 

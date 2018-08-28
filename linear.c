@@ -1,4 +1,4 @@
-// $Id: linear.c,v 1.24 2018/07/11 06:56:48 karn Exp $
+// $Id: linear.c,v 1.25 2018/08/09 03:55:46 karn Exp $
 
 // General purpose linear demodulator
 // Handles USB/IQ/CW/etc, basically all modes but FM and envelope-detected AM
@@ -235,7 +235,7 @@ void *demod_linear(void *arg){
       if(isnan(demod->foffset))
 	demod->foffset = feedback + delta_f;
       else
-	demod->foffset += 0.1 * (feedback + delta_f - demod->foffset);
+	demod->foffset += 0.001 * (feedback + delta_f - demod->foffset);
     } else {
       // Not used in non-coherent (i.e., non-PLL) modes
       demod->cphase = NAN;

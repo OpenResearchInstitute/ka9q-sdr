@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.133 2018/08/04 21:06:16 karn Exp $
+// $Id: display.c,v 1.134 2018/08/12 08:31:40 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -360,7 +360,7 @@ void *display(void *arg){
   scrollok(debug,1);
 
   // A message from our sponsor...
-  wprintw(debug,"KA9Q SDR Receiver v1.0; Copyright 2017 Phil Karn\n");
+  wprintw(debug,"KA9Q SDR Receiver v1.0; Copyright 2017-2018 Phil Karn\n");
   wprintw(debug,"Compiled on %s at %s\n",__DATE__,__TIME__);
 
 
