@@ -1,4 +1,4 @@
-// $Id: opussend.c,v 1.17 2018/07/19 00:02:32 karn Exp $
+// $Id: opussend.c,v 1.18 2018/08/29 01:34:15 karn Exp $
 // Multicast local audio with Opus
 // Copyright Feb 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -82,6 +82,7 @@ static inline int signmod(unsigned int const a){
 
 
 int main(int argc,char * const argv[]){
+#if 0 // Better done manually or in systemd?
   // Try to improve our priority
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 15);
@@ -89,6 +90,7 @@ int main(int argc,char * const argv[]){
   // Drop root if we have it
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   setlocale(LC_ALL,getenv("LANG"));
 

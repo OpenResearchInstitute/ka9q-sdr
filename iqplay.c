@@ -1,4 +1,4 @@
-// $Id: iqplay.c,v 1.26 2018/07/06 06:06:12 karn Exp $
+// $Id: iqplay.c,v 1.27 2018/08/29 01:34:15 karn Exp $
 // Read from IQ recording, multicast in (hopefully) real time
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1 // allow bind/connect/recvfrom without casting sockaddr_in6
@@ -109,6 +109,7 @@ int playfile(int sock,int fd,int blocksize){
 
 
 int main(int argc,char *argv[]){
+#if 0 // Better done manually?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -117,6 +118,7 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   char *dest = "iq.playback.mcast.local"; // Default for testing
   char *locale = getenv("LANG");

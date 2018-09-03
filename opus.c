@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.22 2018/07/19 00:02:24 karn Exp $
+// $Id: opus.c,v 1.23 2018/08/29 01:34:15 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -80,6 +80,7 @@ int send_samples(struct session *sp,float left,float right);
 
 
 int main(int argc,char * const argv[]){
+#if 0   // Better handled in systemd?
   // Try to improve our priority
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -87,6 +88,7 @@ int main(int argc,char * const argv[]){
   // Drop root if we have it
   if(seteuid(getuid()) != 0)
     perror("setuid");
+#endif
 
   setlocale(LC_ALL,getenv("LANG"));
 

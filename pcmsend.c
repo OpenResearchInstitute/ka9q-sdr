@@ -1,4 +1,4 @@
-// $Id: pcmsend.c,v 1.6 2018/07/06 06:13:07 karn Exp $
+// $Id: pcmsend.c,v 1.7 2018/08/29 01:34:15 karn Exp $
 // Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -83,6 +83,7 @@ static short const scaleclip(float const x){
 
 
 int main(int argc,char * const argv[]){
+#if 0 // Better done manually or in systemd?
   // Try to improve our priority
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 15);
@@ -90,6 +91,7 @@ int main(int argc,char * const argv[]){
   // Drop root if we have it
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   setlocale(LC_ALL,getenv("LANG"));
 

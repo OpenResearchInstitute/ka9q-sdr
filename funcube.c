@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.46 2018/08/27 21:41:14 karn Exp $
+// $Id: funcube.c,v 1.49 2018/08/29 02:04:16 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -113,6 +113,7 @@ void errmsg(const char *fmt,...){
 
 
 int main(int argc,char *argv[]){
+#if 0 // Better handled in systemd?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -121,6 +122,7 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
     fprintf(stderr,"seteuid: %s\n",strerror(errno));
+#endif
 
   char *dest = NULL;
 
@@ -200,6 +202,7 @@ int main(int argc,char *argv[]){
       exit(1);
 
     openlog("funcube",LOG_PID,LOG_DAEMON);
+#if 0 // Now handled by systemd
     struct stat statbuf;
     if(stat(Rundir,&statbuf) == -1){
       if(mkdir(Rundir,0775) != 0) // Ensure it exists, let everybody read it
@@ -207,8 +210,9 @@ int main(int argc,char *argv[]){
     } else if(!(statbuf.st_mode & S_IFDIR)){
       errmsg("%s already exists as non-directory\n",Rundir);
     }
+#endif
     // see if one is already running
-    int r = asprintf(&Pid_filename,"%s/%d.pid",Rundir,Device);
+    int r = asprintf(&Pid_filename,"%s%d/pid",Rundir,Device);
     if(r == -1){
       // Unlikely, but it makes the compiler happy
       errmsg("asprintf error");
@@ -233,7 +237,7 @@ int main(int argc,char *argv[]){
       fprintf(pidfile,"%d\n",pid);
       fclose(pidfile);
     }
-    r = asprintf(&Status_filename,"%s/%d.status",Rundir,Device);
+    r = asprintf(&Status_filename,"%s%d/status",Rundir,Device);
     if(r == -1){
       // Unlikely, but it makes the compiler happy
       errmsg("asprintf error");
@@ -263,7 +267,7 @@ int main(int argc,char *argv[]){
   signal(SIGSEGV,closedown);
 #endif
 
-  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Ssrc,Status_filename);
+
 
   // Load/save calibration file
   {
@@ -329,6 +333,7 @@ int main(int argc,char *argv[]){
     time(&tt);
     Ssrc = tt & 0xffffffff; // low 32 bits of clock time
   }
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Ssrc,Status_filename);
   int timestamp = 0;
   int seq = 0;
   // Gain and phase corrections. These will be updated every block
