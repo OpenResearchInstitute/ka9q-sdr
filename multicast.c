@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.28 2018/08/26 07:29:26 karn Exp $
+// $Id: multicast.c,v 1.29 2018/09/01 22:32:05 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -47,12 +47,27 @@ static void soptions(int fd){
 // Join a socket to a multicast group
 #if defined(linux) // Linux, etc, for both IPv4/IPv6
 static int join_group(int fd,struct addrinfo *resp){
-  struct sockaddr_in const *sin = (struct sockaddr_in *)resp->ai_addr;
-  if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
+  struct sockaddr_in *sin = (struct sockaddr_in *)resp->ai_addr;;
+  struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)resp->ai_addr;;
+
+  if(fd < 0)
     return -1;
 
+  switch(sin->sin_family){
+  case PF_INET:
+    if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
+      return -1;
+    break;
+  case PF_INET6:
+    if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
+      return -1;
+    break;
+  default:
+    return -1; // Unknown address family
+  }
+
   struct group_req group_req;
-  group_req.gr_interface = 0;
+  group_req.gr_interface = 0; // Default interface
   memcpy(&group_req.gr_group,resp->ai_addr,resp->ai_addrlen);
   if(setsockopt(fd,IPPROTO_IP,MCAST_JOIN_GROUP,&group_req,sizeof(group_req)) != 0){
     perror("multicast join");
@@ -62,16 +77,36 @@ static int join_group(int fd,struct addrinfo *resp){
 }
 #else // old version, seems required on Apple    
 static int join_group(int fd,struct addrinfo *resp){
-  struct sockaddr_in const *sin = (struct sockaddr_in *)resp->ai_addr;
-  if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-     return -1;
-
+  struct sockaddr_in *sin = (struct sockaddr_in *)resp->ai_addr;
+  struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)resp->ai_addr;
   struct ip_mreq mreq;
-  mreq.imr_multiaddr = sin->sin_addr;
-  mreq.imr_interface.s_addr = INADDR_ANY;
-  if(setsockopt(fd,IPPROTO_IP,IP_ADD_MEMBERSHIP,&mreq,sizeof(mreq)) != 0){
-    perror("multicast join");
+  struct ipv6_mreq ipv6_mreq;
+
+  if(fd < 0)
     return -1;
+  switch(sin->sin_family){
+  case PF_INET:
+    if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
+      return -1;
+    mreq.imr_multiaddr = sin->sin_addr;
+    mreq.imr_interface.s_addr = INADDR_ANY; // Default interface
+    if(setsockopt(fd,IPPROTO_IP,IP_ADD_MEMBERSHIP,&mreq,sizeof(mreq)) != 0){
+      perror("multicast v4 join");
+      return -1;
+    }
+    break;
+  case PF_INET6:
+    if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
+      return -1;
+    ipv6_mreq.ipv6mr_multiaddr = sin6->sin6_addr;
+    ipv6_mreq.ipv6mr_interface = 0; // Default interface
+    if(setsockopt(fd,IPPROTO_IP,IPV6_JOIN_GROUP,&ipv6_mreq,sizeof(ipv6_mreq)) != 0){
+      perror("multicast v6 join");
+      return -1;
+    }
+    break;
+  default:
+    return -1; // Unknown address family
   }
   return 0;
 }
@@ -80,6 +115,7 @@ static int join_group(int fd,struct addrinfo *resp){
 char Default_mcast_port[] = "5004";
 
 // Set up multicast socket for input or output
+
 // Target is in the form of domain.name.com:5004 or 1.2.3.4:5004
 // when output = 1, connect to the multicast address so we can simply send() to it without specifying a destination
 // when output = 0, bind to it so we'll accept incoming packets
@@ -97,18 +133,22 @@ int setup_mcast(char const *target,int output){
 
   struct addrinfo hints;
   memset(&hints,0,sizeof(hints));
-  hints.ai_family = AF_INET; // Only IPv4 for now (grrr....)
+  hints.ai_family = PF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
-  hints.ai_flags = AI_NUMERICSERV;
+  hints.ai_protocol = IPPROTO_UDP;
+  hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV | (!output ? AI_PASSIVE : 0);
 
   struct addrinfo *results = NULL;
   int ecode;
   // Try a few times in case we come up before the resolver is quite ready
+
   for(int tries=0; tries < 10; tries++){
+    //  fprintf(stderr,"Calling getaddrinfo(%s,%s)\n",host,port);
     if((ecode = getaddrinfo(host,port,&hints,&results)) == 0)
       break;
     usleep(500000);
   }    
+  //  fprintf(stderr,"getaddrinfo returns %d\n",ecode);
   if(ecode != 0){
     fprintf(stderr,"setup_mcast getaddrinfo(%s,%s): %s\n",host,port,gai_strerror(ecode));
     return -1;
@@ -116,14 +156,14 @@ int setup_mcast(char const *target,int output){
   struct addrinfo *resp;
   int fd = -1;
   for(resp = results; resp != NULL; resp = resp->ai_next){
+    //    fprintf(stderr,"family %d socktype %d protocol %d\n",resp->ai_family,resp->ai_socktype,resp->ai_protocol);
     if((fd = socket(resp->ai_family,resp->ai_socktype,resp->ai_protocol)) < 0)
       continue;
 
     soptions(fd);
     if(output){
       // Try up to 10 times
-      // this connect can fail with an unreachable when brought up by systemd at boot
-      // multicast 
+      // this connect can fail with an unreachable when brought up quickly by systemd at boot
       for(int tries=0; tries < 10; tries++){
 	if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
 	  goto done;

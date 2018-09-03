@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.117 2018/08/26 18:16:49 karn Exp $
+// $Id: main.c,v 1.118 2018/09/01 22:32:39 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -125,7 +125,7 @@ int main(int argc,char *argv[]){
   demod->imbalance = 1; // 0 dB
 
   // set invalid to start
-  demod->input_source_address.sa_family = -1; // Set invalid
+  demod->input_source_address.ss_family = -1; // Set invalid
   demod->low = NAN;
   demod->high = NAN;
   set_shift(demod,0);
@@ -273,9 +273,9 @@ int main(int argc,char *argv[]){
 
   // Become the display thread unless quiet; then just twiddle our thumbs
   pthread_t display_thread;
-  if(!Quiet){
+  if(!Quiet)
     pthread_create(&display_thread,NULL,display,demod);
-  }
+
   while(1)
     usleep(1000000); // probably get rid of this
 
@@ -309,7 +309,7 @@ void *rtp_recv(void *arg){
       pkt = malloc(sizeof(*pkt));
 
     socklen_t socksize = sizeof(demod->input_source_address);
-    int size = recvfrom(demod->input_fd,pkt->content,sizeof(pkt->content),0,&demod->input_source_address,&socksize);
+    int size = recvfrom(demod->input_fd,pkt->content,sizeof(pkt->content),0,(struct sockaddr *)&demod->input_source_address,&socksize);
     if(size <= 0){    // ??
       perror("recvfrom");
       usleep(50000);
