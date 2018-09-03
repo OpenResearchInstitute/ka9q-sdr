@@ -1,9 +1,9 @@
-# $Id: Makefile.osx,v 1.52 2018/08/26 18:20:39 karn Exp $
+# $Id: Makefile.osx,v 1.53 2018/09/03 04:52:45 karn Exp $
 CFLAGS=-g -O3 -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
 LD_FLAGS=-lpthread -lm
-EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend radio 
+EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend pcmcat radio 
 AFILES=bandplan.txt help.txt modes.txt
 
 all: $(EXECS) $(AFILES)
@@ -52,6 +52,9 @@ opussend: opussend.o libradio.a
 packet: packet.o ax25.o libradio.a
 	$(CC) -g -o $@ $^ -lfftw3f_threads -lfftw3f -lm -lpthread 
 
+pcmcat: pcmcat.o libradio.a
+	$(CC) -g -o $@ $^ -lm -lpthread 
+
 pcmsend: pcmsend.o libradio.a
 	$(CC) -g -o $@ $^ -lportaudio -lm -lpthread
 
@@ -77,6 +80,7 @@ modulate.o: modulate.c misc.h filter.h radio.h sdr.h
 monitor.o: monitor.c misc.h multicast.h
 opus.o: opus.c misc.h multicast.h
 opussend.o: opussend.c misc.h multicast.h
+pcmcat.o: pcmcat.c multicast.h
 pcmsend.o: pcmsend.c misc.h multicast.h
 
 # Components of libfcd.a
