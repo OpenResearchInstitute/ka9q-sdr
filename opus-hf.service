@@ -1,4 +1,4 @@
-# $Id: opus-hf.service,v 1.1 2018/08/28 21:42:29 karn Exp $
+# $Id: opus-hf.service,v 1.2 2018/08/29 01:21:35 karn Exp $
 # Systemd startup module for PCM->Opus transcoder for HF audio
 # Phil Karn, KA9Q Aug 2018
 
@@ -7,6 +7,7 @@ Description=HF opus transcoder
 Requires=multi-user.target
 
 [Service]
+Nice=-10
 Type=simple
 ExecStart=/usr/local/bin/opus -I pcm.hf.mcast.local -R opus.hf.mcast.local
 DynamicUser=1

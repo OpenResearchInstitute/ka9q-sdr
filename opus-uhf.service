@@ -1,8 +1,13 @@
+# $Id: opus-uhf.service,v 1.2 2018/08/29 01:21:35 karn Exp $
+# Systemd startup module for PCM->Opus transcoder for UHF audio
+# Phil Karn, KA9Q Aug 2018
+
 [Unit]
 Description=UHF opus transcoder
 Requires=multi-user.target
 
 [Service]
+Nice=-10
 Type=simple
 ExecStart=/usr/local/bin/opus -I pcm.uhf.mcast.local -R opus.uhf.mcast.local
 DynamicUser=1
