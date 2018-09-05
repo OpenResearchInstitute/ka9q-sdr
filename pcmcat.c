@@ -1,4 +1,4 @@
-// $Id: pcmcat.c,v 1.5 2018/09/03 09:20:20 karn Exp $
+// $Id: pcmcat.c,v 1.6 2018/09/05 08:18:22 karn Exp $
 // Receive and stream PCM RTP data to stdout
 
 #define _GNU_SOURCE 1
@@ -35,11 +35,11 @@ int const Bufsize = 2048;
 float const Samprate = 48000;
 
 int Input_fd = -1;
-uint32_t Ssrc;
 struct pcmstream *Pcmstream;
 int Verbose;
 int Sessions; // Session count - limit to 1 for now
 int Stereo;   // Force stereo output
+uint32_t Ssrc; // Requested SSRC
 
 struct pcmstream *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
   struct pcmstream *sp;
@@ -126,7 +126,7 @@ int main(int argc,char *argv[]){
   Mcast_address_text = argv[optind];
 
   // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0);
+  Input_fd = setup_mcast(Mcast_address_text,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input from %s\n",
 	    Mcast_address_text);

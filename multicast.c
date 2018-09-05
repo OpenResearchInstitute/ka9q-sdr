@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.29 2018/09/01 22:32:05 karn Exp $
+// $Id: multicast.c,v 1.31 2018/09/05 08:18:22 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -113,14 +113,16 @@ static int join_group(int fd,struct addrinfo *resp){
 #endif
 
 char Default_mcast_port[] = "5004";
+char Default_rtcp_port[] = "5005";
 
 // Set up multicast socket for input or output
 
 // Target is in the form of domain.name.com:5004 or 1.2.3.4:5004
 // when output = 1, connect to the multicast address so we can simply send() to it without specifying a destination
 // when output = 0, bind to it so we'll accept incoming packets
+// Add parameter 'rtcp' to port number; this will be 1 when sending RTCP messages
 // (Can we just do both?)
-int setup_mcast(char const *target,int output){
+int setup_mcast(char const *target,int output,int offset){
   int len = strlen(target) + 1;  // Including terminal null
   char host[len],*port;
 
@@ -159,6 +161,20 @@ int setup_mcast(char const *target,int output){
     //    fprintf(stderr,"family %d socktype %d protocol %d\n",resp->ai_family,resp->ai_socktype,resp->ai_protocol);
     if((fd = socket(resp->ai_family,resp->ai_socktype,resp->ai_protocol)) < 0)
       continue;
+
+    struct sockaddr_in *sinp;
+    struct sockaddr_in6 *sinp6;
+
+    switch(resp->ai_family){
+    case AF_INET:
+      sinp = (struct sockaddr_in *)resp->ai_addr;
+      sinp->sin_port = htons(ntohs(sinp->sin_port) + offset);
+      break;
+    case AF_INET6:
+      sinp6 = (struct sockaddr_in6 *)resp->ai_addr;
+      sinp6->sin6_port = htons(ntohs(sinp6->sin6_port) + offset);
+      break;
+    }
 
     soptions(fd);
     if(output){
@@ -214,14 +230,6 @@ int setup_mcast(char const *target,int output){
 // Convert RTP header from network (wire) big-endian format to internal host structure
 // Written to be insensitive to host byte order and C structure layout and padding
 // Use of unsigned formats is important to avoid unwanted sign extension
-
-static inline unsigned short get16(unsigned char *dp){
-  return dp[0] << 8 | dp[1];
-}
-static inline unsigned long get32(unsigned char *dp){
-  return dp[0] << 24 | dp[1] << 16 | dp[2] << 8 | dp[3];
-}
-
 unsigned char *ntoh_rtp(struct rtp_header *rtp,unsigned char *data){
   unsigned char *dp = data;
 
@@ -262,21 +270,6 @@ unsigned char *ntoh_rtp(struct rtp_header *rtp,unsigned char *data){
 
 // Convert RTP header from internal host structure to network (wire) big-endian format
 // Written to be insensitive to host byte order and C structure layout and padding
-
-static inline unsigned char *put16(unsigned char *dp,uint16_t x){
-  *dp++ = x >> 8;
-  *dp++ = x;
-  return dp;
-}
-static inline unsigned char *put32(unsigned char *dp,uint32_t x){
-  *dp++ = x >> 24;
-  *dp++ = x >> 16;
-  *dp++ = x >> 8;
-  *dp++ = x;
-  return dp;
-}
-
-
 unsigned char *hton_rtp(unsigned char *data, struct rtp_header *rtp){
   rtp->cc &= 0xf; // Force it to be legal
   rtp->type &= 0x7f;
@@ -304,12 +297,12 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
   state->ssrc = rtp->ssrc; // Must be filtered elsewhere if you want it
   state->packets++;
   if(!state->init){
-    state->expected_seq = rtp->seq;
-    state->expected_timestamp = rtp->timestamp;
+    state->seq = rtp->seq;
+    state->timestamp = rtp->timestamp;
     state->init = 1;
   }
   // Sequence number check
-  short seq_step = (short)(rtp->seq - state->expected_seq);
+  short seq_step = (short)(rtp->seq - state->seq);
   if(seq_step != 0){
     if(seq_step < 0){
       state->dupes++;
@@ -317,13 +310,13 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
     }
     state->drops += seq_step;
   }
-  state->expected_seq = rtp->seq + 1;
+  state->seq = rtp->seq + 1;
 
-  int time_step = (int)(rtp->timestamp - state->expected_timestamp);
+  int time_step = (int)(rtp->timestamp - state->timestamp);
   if(time_step < 0)
     return time_step;    // Old samples; drop. Shouldn't happen if sequence number isn't old
 
-  state->expected_timestamp = rtp->timestamp + sampcnt;
+  state->timestamp = rtp->timestamp + sampcnt;
   return time_step;
 }
 

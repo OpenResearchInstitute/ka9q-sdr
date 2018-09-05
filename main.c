@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.118 2018/09/01 22:32:39 karn Exp $
+// $Id: main.c,v 1.119 2018/09/05 08:18:22 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -32,6 +32,7 @@
 
 void closedown(int);
 void *rtp_recv(void *);
+void *rtcp_send(void *);
 
 // Primary control blocks for downconvert/filter/demodulate and audio output
 // Note: initialized to all zeroes, like all global variables
@@ -48,7 +49,7 @@ char Statepath[PATH_MAX];
 char Locale[256] = "en_US.UTF-8";
 int Update_interval = 100;  // 100 ms between screen updates
 int SDR_correct = 0;
-uint32_t Ssrc = 0;
+struct timeval Starttime;      // System clock at timestamp 0, for RTCP
 
 void audio_cleanup(void *);
 
@@ -200,7 +201,7 @@ int main(int argc,char *argv[]){
       Verbose++;
       break;
     case 'S':   // Set SSRC on output stream
-      Ssrc = strtol(optarg,NULL,0);
+      Audio.rtp.ssrc = strtol(optarg,NULL,0);
       break;
     default:
       fprintf(stderr,"Usage: %s [-d doppler_command] [-f frequency] [-I iq multicast address] [-k kaiser_beta] [-l locale] [-L blocksize] [-m mode] [-M FIRlength] [-q] [-R Audio multicast address] [-s shift offset] [-t threads] [-u update_ms] [-v]\n",argv[0]);
@@ -230,7 +231,7 @@ int main(int argc,char *argv[]){
   pthread_cond_init(&demod->qcond,NULL);
 
   // Input socket for I/Q data from SDR
-  demod->input_fd = setup_mcast(demod->iq_mcast_address_text,0);
+  demod->input_fd = setup_mcast(demod->iq_mcast_address_text,0,0);
   if(demod->input_fd == -1){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
@@ -238,6 +239,8 @@ int main(int argc,char *argv[]){
   // For sending commands to front end
   if((demod->ctl_fd = socket(PF_INET,SOCK_DGRAM, 0)) == -1)
     perror("can't open control socket");
+
+  gettimeofday(&Starttime,NULL);
 
   // Blocksize really should be computed from demod->L and decimate
   if(setup_audio(audio) != 0){
@@ -275,6 +278,9 @@ int main(int argc,char *argv[]){
   pthread_t display_thread;
   if(!Quiet)
     pthread_create(&display_thread,NULL,display,demod);
+
+  pthread_t rtcp_thread;
+  pthread_create(&rtcp_thread,NULL,rtcp_send,demod);
 
   while(1)
     usleep(1000000); // probably get rid of this
@@ -444,4 +450,79 @@ int loadstate(struct demod *dp,char const *filename){
   }
   fclose(fp);
   return 0;
+}
+
+extern struct timeval Starttime;
+extern int Payload_bytes;
+
+// RTP control protocol sender task
+void *rtcp_send(void *arg){
+  struct demod *demod = (struct demod *)arg;
+  if(demod == NULL)
+    pthread_exit(NULL);
+
+  pthread_setname("rtcp");
+  //  fprintf(stderr,"hello from rtcp_send\n");
+  while(1){
+
+    if(Audio.rtp.ssrc == 0) // Wait until it's set by audio RTP subsystem
+      goto done;
+    unsigned char buffer[4096]; // much larger than necessary
+    memset(buffer,0,sizeof(buffer));
+    
+    // Construct sender report
+    struct rtcp_sr sr;
+    memset(&sr,0,sizeof(sr));
+    sr.ssrc = Audio.rtp.ssrc;
+
+    // Construct NTP timestamp
+    struct timeval tv;
+    gettimeofday(&tv,NULL);
+    double runtime = (tv.tv_sec - Starttime.tv_sec) + (tv.tv_usec - Starttime.tv_usec)/1000000.;
+
+    long long now_time = ((long long)tv.tv_sec + NTP_EPOCH)<< 32;
+    now_time += ((long long)tv.tv_usec << 32) / 1000000;
+
+    sr.ntp_timestamp = now_time;
+    // The zero is to remind me that I start timestamps at zero, but they could start anywhere
+    sr.rtp_timestamp = 0 + runtime * 48000;
+    sr.packet_count = Audio.rtp.seq;
+    sr.byte_count = Audio.rtp.bytes;
+    
+    unsigned char *dp = gen_sr(buffer,sizeof(buffer),&sr,NULL,0);
+
+    // Construct SDES
+    struct rtcp_sdes sdes[4];
+    
+    // CNAME
+    char hostname[1024];
+    gethostname(hostname,sizeof(hostname));
+    char *string;
+    asprintf(&string,"radio@%s",hostname);
+    if(strlen(string) <= 255){
+      sdes[0].type = CNAME;
+      strcpy(sdes[0].message,string);
+      sdes[0].mlen = strlen(sdes[0].message);
+    }
+    free(string); string = NULL;
+
+    sdes[1].type = NAME;
+    strcpy(sdes[1].message,"KA9Q Radio Program");
+    sdes[1].mlen = strlen(sdes[1].message);
+    
+    sdes[2].type = EMAIL;
+    strcpy(sdes[2].message,"karn@ka9q.net");
+    sdes[2].mlen = strlen(sdes[2].message);
+
+    sdes[3].type = TOOL;
+    strcpy(sdes[3].message,"KA9Q Radio Program");
+    sdes[3].mlen = strlen(sdes[3].message);
+    
+    dp = gen_sdes(dp,sizeof(buffer) - (dp-buffer),Audio.rtp.ssrc,sdes,4);
+
+
+    send(Audio.rtcp_mcast_fd,buffer,dp-buffer,0);
+  done:;
+    usleep(1000000);
+  }
 }

@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.80 2018/09/01 22:33:45 karn Exp $
+// $Id: monitor.c,v 1.81 2018/09/05 08:18:22 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -274,7 +274,7 @@ void *sockproc(void *arg){
   char *mcast_address_text = (char *)arg;
 
   // Set up multicast input
-  int input_fd = setup_mcast(mcast_address_text,0);
+  int input_fd = setup_mcast(mcast_address_text,0,0);
   if(input_fd == -1){
     fprintf(stderr,"Can't set up input %s\n",mcast_address_text);
     pthread_exit(NULL);
@@ -522,7 +522,7 @@ void *decode_task(void *arg){
       break;
     }
     sp->wptr += sp->frame_size;
-    sp->rtp_state.expected_timestamp = pkt->rtp.timestamp + sp->frame_size;
+    sp->rtp_state.timestamp = pkt->rtp.timestamp + sp->frame_size;
   done:;
     free(pkt); pkt = NULL;
   }

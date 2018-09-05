@@ -1,4 +1,4 @@
-// $Id: audio.c,v 1.72 2018/08/26 18:16:49 karn Exp $
+// $Id: audio.c,v 1.73 2018/09/05 08:18:22 karn Exp $
 // Audio multicast routines for KA9Q SDR receiver
 // Handles linear 16-bit PCM, mono and stereo
 // Copyright 2017 Phil Karn, KA9Q
@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <string.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 
 #include "misc.h"
 #include "multicast.h"
@@ -17,10 +18,6 @@
 
 #define PCM_BUFSIZE 480        // 16-bit word count; must fit in Ethernet MTU
 #define PACKETSIZE 2048        // Somewhat larger than Ethernet MTU
-
-uint16_t Rtp_seq = 0;
-extern uint32_t Ssrc;
-uint32_t Timestamp;
 
 static short const scaleclip(float const x){
   if(x >= 1.0)
@@ -38,29 +35,31 @@ int send_stereo_audio(struct audio * const audio,float const * buffer,int size){
   memset(&rtp,0,sizeof(rtp));
   rtp.type = PCM_STEREO_PT;         // 16 bit linear, big endian, stereo
   rtp.version = RTP_VERS;
-  rtp.ssrc = Ssrc;
+  rtp.ssrc = audio->rtp.ssrc;
 
   int16_t PCM_buf[PCM_BUFSIZE];
 
   while(size > 0){
     int not_silent = 0;
     int chunk = min(PCM_BUFSIZE,2*size);
+
     for(int i=0; i < chunk; i ++){
       float samp = *buffer++;
       PCM_buf[i] = htons(scaleclip(samp));
       not_silent |= PCM_buf[i];
     }      
     // If packet is all zeroes, don't send it but still increase the timestamp
-    rtp.timestamp = Timestamp;
-    Timestamp += chunk/2; // Increase by sample count
+    rtp.timestamp = audio->rtp.timestamp;
+    rtp.timestamp += chunk/2; // Increase by sample count
     if(not_silent){
-      audio->audio_packets++;
+      audio->rtp.bytes += sizeof(signed short) * chunk;
+      audio->rtp.packets++;
       if(audio->silent){
 	audio->silent = 0;
 	rtp.marker = 1;
       } else
 	rtp.marker = 0;
-      rtp.seq = Rtp_seq++;
+      rtp.seq = audio->rtp.seq++;
       unsigned char packet[PACKETSIZE],*dp;
       dp = packet;
 
@@ -86,30 +85,32 @@ int send_mono_audio(struct audio * const audio,float const * buffer,int size){
   memset(&rtp,0,sizeof(rtp));
   rtp.version = RTP_VERS;
   rtp.type = PCM_MONO_PT;         // 16 bit linear, big endian, mono
-  rtp.ssrc = Ssrc;
+  rtp.ssrc = audio->rtp.ssrc;
 
   int16_t PCM_buf[PCM_BUFSIZE];
 
   while(size > 0){
     int not_silent = 0;
     int chunk = min(PCM_BUFSIZE,size); // # of mono samples (frames)
+
     for(int i=0; i < chunk; i++){
       float samp = *buffer++;
       PCM_buf[i] = htons(scaleclip(samp));
       not_silent |= PCM_buf[i];
     }      
     // If packet is all zeroes, don't send it but still increase the timestamp
-    rtp.timestamp = Timestamp;
-    Timestamp += chunk; // Increase by sample count
+    rtp.timestamp = audio->rtp.timestamp;
+    audio->rtp.timestamp += chunk; // Increase by sample count
     if(not_silent){
       // Don't send silence, but timestamp is still incremented
-      audio->audio_packets++;
+      audio->rtp.packets++;
+      audio->rtp.bytes += sizeof(signed short) * chunk;
       if(audio->silent){
 	audio->silent = 0;
 	rtp.marker = 1;
       } else
 	rtp.marker = 0;
-      rtp.seq = Rtp_seq++;
+      rtp.seq = audio->rtp.seq++;
       unsigned char packet[PACKETSIZE];
       unsigned char *dp = packet;
 
@@ -145,11 +146,12 @@ int setup_audio(struct audio * const audio){
   assert(audio != NULL);
 
   // If not already set, Use time of day as RTP SSRC
-  if(Ssrc == 0){
+  if(audio->rtp.ssrc == 0){
     time_t tt = time(NULL);
-    Ssrc = tt & 0xffffffff;
+    audio->rtp.ssrc = tt & 0xffffffff;
   }
-  audio->audio_mcast_fd = setup_mcast(Audio.audio_mcast_address_text,1);
+  audio->audio_mcast_fd = setup_mcast(audio->audio_mcast_address_text,1,0);
+  audio->rtcp_mcast_fd = setup_mcast(audio->audio_mcast_address_text,1,1);
 
   return 0;
 }

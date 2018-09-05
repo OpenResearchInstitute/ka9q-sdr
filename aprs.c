@@ -1,4 +1,4 @@
-// $Id: aprs.c,v 1.16 2018/08/06 06:29:26 karn Exp $
+// $Id: aprs.c,v 1.17 2018/09/05 08:18:22 karn Exp $
 // Process AX.25 frames containing APRS data, extract lat/long/altitude, compute az/el
 // INCOMPLETE, doesn't yet drive antenna rotors
 // Should also use RTP for AX.25 frames
@@ -134,7 +134,7 @@ int main(int argc,char *argv[]){
   }    
 
   // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0);
+  Input_fd = setup_mcast(Mcast_address_text,0,0);
   if(Input_fd == -1){
     fprintf(stdout,"Can't set up input from %s\n",
 	    Mcast_address_text);

@@ -1,4 +1,4 @@
-// $Id: opussend.c,v 1.18 2018/08/29 01:34:15 karn Exp $
+// $Id: opussend.c,v 1.19 2018/09/05 08:18:22 karn Exp $
 // Multicast local audio with Opus
 // Copyright Feb 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -23,7 +23,7 @@
 
 // Global config variables
 char *Audiodev = "";
-char *Mcast_output_address_text = "audio-opus-mcast.local";     // Multicast address we're sending to
+char *Mcast_output_address_text;  // Multicast address we're sending to
 
 #define BUFFERSIZE (1<<18)    // Size of audio ring buffer in mono samples. 2^18 is 2.73 sec at 48 kHz stereo
                               // Defined as macro so the Audiodata[] declaration below won't bother some compilers
@@ -261,23 +261,26 @@ int main(int argc,char * const argv[]){
 
   // Always seems to return error -5 even when OK??
   error = opus_encoder_ctl(Opus,OPUS_FRAMESIZE_ARG,(int)Opus_frame_size);
-  if(0 && error != OPUS_OK){
+  if(0 && error != OPUS_OK)
     fprintf(stderr,"opus_encoder_ctl set framesize %d (%.1lf ms): error %d\n",Opus_frame_size,Opus_blocktime,error);
-  }
 
 
   // Set up multicast transmit socket
-  Output_fd = setup_mcast(Mcast_output_address_text,1);
+  if(!Mcast_output_address_text){
+    fprintf(stderr,"Must specify -R mcast_output_address\n");
+    exit(1);
+  }
+  Output_fd = setup_mcast(Mcast_output_address_text,1,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
   }
   // Set up to transmit Opus RTP/UDP/IP
-  unsigned long timestamp = 0;
-  unsigned short seq = 0;
+  struct rtp_state rtp_state_out;
+  memset(&rtp_state_out,0,sizeof(rtp_state_out));
   struct timeval tp;
   gettimeofday(&tp,NULL);
-  unsigned long ssrc = tp.tv_sec;
+  rtp_state_out.ssrc = tp.tv_sec;
 
   // Graceful signal catch
   signal(SIGPIPE,closedown);
@@ -317,25 +320,27 @@ int main(int argc,char * const argv[]){
     if(rptr >= BUFFERSIZE)
       rptr -= BUFFERSIZE;
 
-    struct rtp_header rtp_out;
-    memset(&rtp_out,0,sizeof(rtp_out));
-    rtp_out.version = RTP_VERS;
-    rtp_out.type = OPUS_PT; // Opus (not standard)
-    rtp_out.seq = seq;
-    rtp_out.ssrc = ssrc;
-    rtp_out.timestamp = timestamp;
+    struct rtp_header rtp_hdr;
+    memset(&rtp_hdr,0,sizeof(rtp_hdr));
+    rtp_hdr.version = RTP_VERS;
+    rtp_hdr.type = OPUS_PT; // Opus (not standard)
+    rtp_hdr.seq = rtp_state_out.seq;
+    rtp_hdr.ssrc = rtp_state_out.ssrc;
+    rtp_hdr.timestamp = rtp_state_out.timestamp;
 
     unsigned char buffer[16384]; // Pick better number
     unsigned char *dp = buffer;
-    dp = hton_rtp(dp,&rtp_out);
+    dp = hton_rtp(dp,&rtp_hdr);
 
     int size = opus_encode_float(Opus,opus_input,Opus_frame_size,dp,sizeof(buffer) - (dp - buffer));
     if(!Discontinuous || size > 2){
       dp += size;
       send(Output_fd,buffer,dp - buffer,0);
-      seq++; // Increment RTP sequence number only if packet is sent
+      rtp_state_out.seq++; // Increment RTP sequence number only if packet is sent
+      rtp_state_out.packets++;
+      rtp_state_out.bytes += size;
     }
-    timestamp += Opus_frame_size; // Always increments, even if we suppress the frame
+    rtp_state_out.timestamp += Opus_frame_size; // Always increments, even if we suppress the frame
   }
   opus_encoder_destroy(Opus);
   close(Output_fd);

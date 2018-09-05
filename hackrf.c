@@ -1,4 +1,4 @@
-// $Id: hackrf.c,v 1.11 2018/08/29 01:34:15 karn Exp $
+// $Id: hackrf.c,v 1.12 2018/09/05 08:18:22 karn Exp $
 // Read from HackRF
 // Multicast raw 8-bit I/Q samples
 // Accept control commands from UDP socket
@@ -81,9 +81,7 @@ pthread_t AGC_thread;
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
 int Ctl_sock;
 extern int Mcast_ttl;
-uint32_t Ssrc;
-int Seq = 0;
-int Timestamp = 0;
+struct rtp_state Rtp;
 
 complex float Sampbuffer[BUFFERSIZE];
 int Samp_wp;
@@ -201,7 +199,7 @@ void *process(void *arg){
   memset(&rtp,0,sizeof(rtp));
   rtp.version = RTP_VERS;
   rtp.type = IQ_PT;
-  rtp.ssrc = Ssrc;
+  rtp.ssrc = Rtp.ssrc;
   int rotate_phase = 0;
 
   // Decimation filter states
@@ -236,8 +234,8 @@ void *process(void *arg){
   float time_p_packet = (float)Blocksize / Out_samprate;
   while(1){
 
-    rtp.timestamp = Timestamp;
-    rtp.seq = Seq++;
+    rtp.timestamp = Rtp.timestamp;
+    rtp.seq = Rtp.seq++;
 
     unsigned char *dp = buffer;
     dp = hton_rtp(dp,&rtp);
@@ -331,13 +329,14 @@ void *process(void *arg){
       // If we're sending to a unicast address without a listener, we'll get ECONNREFUSED
       // Sleep 1 sec to slow down the rate of these messages
       usleep(1000000);
-    }
-    Timestamp += Blocksize; // samples
-  
+    } else {
+      Rtp.packets++;
+      Rtp.bytes += Blocksize;
+    }  
     // Simply increment by number of samples
     // But what if we lose some? Then the clock will always be off
+    Rtp.timestamp += Blocksize; // samples
     HackCD.status.timestamp += 1.e9 * time_p_packet;
-
   }
 }
 
@@ -396,7 +395,7 @@ int main(int argc,char *argv[]){
       Mcast_ttl = strtol(optarg,NULL,0);
       break;
     case 'S':
-      Ssrc = strtol(optarg,NULL,0);
+      Rtp.ssrc = strtol(optarg,NULL,0);
       break;
     default:
     case '?':
@@ -470,7 +469,7 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,Locale);
   
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1);
+  Rtp_sock = setup_mcast(dest,1,0);
   if(Rtp_sock == -1){
     errmsg("Can't create multicast socket: %s",strerror(errno));
     exit(1);
@@ -545,9 +544,9 @@ int main(int argc,char *argv[]){
   // Timestamp is in nanoseconds for futureproofing, but time of day is only available in microsec
   HackCD.status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
 
-  if(Ssrc == 0)
-    Ssrc = tt & 0xffffffff; // low 32 bits of clock time
-  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Ssrc,Status_filename);
+  if(Rtp.ssrc == 0)
+    Rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Rtp.ssrc,Status_filename);
   errmsg("A/D sample rate %'d Hz; decimation ratio %d; output sample rate %'d Hz; Offset %'+d\n",
 	 ADC_samprate,Decimate,Out_samprate,Offset * ADC_samprate/4);
 

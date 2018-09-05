@@ -1,4 +1,4 @@
-// $Id: iqplay.c,v 1.27 2018/08/29 01:34:15 karn Exp $
+// $Id: iqplay.c,v 1.28 2018/09/05 08:18:22 karn Exp $
 // Read from IQ recording, multicast in (hopefully) real time
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1 // allow bind/connect/recvfrom without casting sockaddr_in6
@@ -157,7 +157,7 @@ int main(int argc,char *argv[]){
 
   setlocale(LC_ALL,locale);
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1);
+  Rtp_sock = setup_mcast(dest,1,0);
 
   signal(SIGPIPE,SIG_IGN);
 

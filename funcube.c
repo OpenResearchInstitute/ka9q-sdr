@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.49 2018/08/29 02:04:16 karn Exp $
+// $Id: funcube.c,v 1.50 2018/09/05 08:18:22 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -69,7 +69,7 @@ int Device = 0;
 char *Locale;
 double Calibration = 0;
 int Daemonize;
-uint32_t Ssrc;
+struct rtp_state Rtp;
 
 char *Rundir = "/run/funcube";
 
@@ -168,7 +168,7 @@ int main(int argc,char *argv[]){
       Mcast_ttl = strtol(optarg,NULL,0);
       break;
     case 'S':
-      Ssrc = strtol(optarg,NULL,0);
+      Rtp.ssrc = strtol(optarg,NULL,0);
       break;
     default:
     case '?':
@@ -254,10 +254,6 @@ int main(int argc,char *argv[]){
   }
 
   // Catch signals so portaudio can be shut down
-#if 0
-  for(int i=1;i<32;i++)
-    signal(i,closedown);
-#else
   signal(SIGPIPE,SIG_IGN);
   signal(SIGINT,closedown);
   signal(SIGKILL,closedown);
@@ -265,9 +261,6 @@ int main(int argc,char *argv[]){
   signal(SIGTERM,closedown);        
   signal(SIGBUS,closedown);
   signal(SIGSEGV,closedown);
-#endif
-
-
 
   // Load/save calibration file
   {
@@ -293,7 +286,7 @@ int main(int argc,char *argv[]){
   }
   // Set up RTP output socket
   usleep(2000000);
-  Rtp_sock = setup_mcast(dest,1);
+  Rtp_sock = setup_mcast(dest,1,0);
   if(Rtp_sock == -1){
     errmsg("Can't create multicast socket: %s\n",strerror(errno));
     exit(1);
@@ -328,14 +321,12 @@ int main(int argc,char *argv[]){
   if(Status)
     pthread_create(&Display_thread,NULL,display,NULL);
 
-  if(Ssrc == 0){
+  if(Rtp.ssrc == 0){
     time_t tt;
     time(&tt);
-    Ssrc = tt & 0xffffffff; // low 32 bits of clock time
+    Rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
   }
-  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Ssrc,Status_filename);
-  int timestamp = 0;
-  int seq = 0;
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Rtp.ssrc,Status_filename);
   // Gain and phase corrections. These will be updated every block
   float gain_q = 1;
   float gain_i = 1;
@@ -353,9 +344,9 @@ int main(int argc,char *argv[]){
     memset(&rtp,0,sizeof(rtp));
     rtp.version = RTP_VERS;
     rtp.type = IQ_PT;         // ordinarily dynamically allocated
-    rtp.ssrc = Ssrc;
-    rtp.seq = seq++;
-    rtp.timestamp = timestamp;
+    rtp.ssrc = Rtp.ssrc;
+    rtp.seq = Rtp.seq++;
+    rtp.timestamp = Rtp.timestamp;
 
     unsigned char buffer[16384]; // Pick a better value
     unsigned char *dp = buffer;
@@ -402,12 +393,16 @@ int main(int argc,char *argv[]){
       //sampbuf[i] = round(crealf(samp));
       //sampbuf[i+1] = round(cimagf(samp));
     }
+
     if(send(Rtp_sock,buffer,dp - buffer,0) == -1){
       errmsg("send: %s\n",strerror(errno));
       // If we're sending to a unicast address without a listener, we'll get ECONNREFUSED
-      // Sleep 1 sec to slow down the rate of these messages
+      // Should sleep to slow down the rate of these messages
+    } else {
+      Rtp.packets++;
+      Rtp.bytes += Blocksize;
     }
-    timestamp += Blocksize;
+    Rtp.timestamp += Blocksize;
 
 #if 0
     // Get status timestamp from UNIX TOD clock -- but this might skew because of inexact sample rate

@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.134 2018/08/12 08:31:40 karn Exp $
+// $Id: display.c,v 1.135 2018/09/05 08:18:22 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -668,8 +668,6 @@ void *display(void *arg){
     }
     row = 1;
     col = 1;
-    extern uint32_t Ssrc;
-
     wmove(network,0,0);
     wclrtobot(network);
     mvwprintw(network,row++,col,"Source: %s:%s -> %s SSRC %0lx",source,sport,demod->iq_mcast_address_text,demod->rtp_state.ssrc);
@@ -701,8 +699,8 @@ void *display(void *arg){
 
     mvwprintw(network,row++,col,"Time: %s",lltime(demod->status.timestamp));
     mvwprintw(network,row++,col,"Sink: %s; ssrc %8x; TTL %d%s",audio->audio_mcast_address_text,
-	      Ssrc,Mcast_ttl,Mcast_ttl == 0 ? " (Local host only)":"");
-    mvwprintw(network,row++,col,"PCM %'d Hz; pkts %'llu",audio->samprate,audio->audio_packets);
+	      Audio.rtp.ssrc,Mcast_ttl,Mcast_ttl == 0 ? " (Local host only)":"");
+    mvwprintw(network,row++,col,"PCM %'d Hz; pkts %'llu",audio->samprate,audio->rtp.packets);
 
     box(network,0,0);
     mvwaddstr(network,0,35,"I/O");
@@ -844,7 +842,7 @@ void *display(void *arg){
 	if(strlen(str) <= 0)
 	  break;
 
-	int const i = setup_mcast(str,0);
+	int const i = setup_mcast(str,0,0);
 	if(i == -1){
 	  beep();
 	  break;

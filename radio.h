@@ -1,4 +1,4 @@
-// $Id: radio.h,v 1.70 2018/09/01 22:32:51 karn Exp $
+// $Id: radio.h,v 1.71 2018/09/05 08:18:22 karn Exp $
 // Internal structures and functions of the 'radio' program
 // Nearly all internal state is in the 'demod' structure
 // More than one can exist in the same program,
@@ -23,7 +23,8 @@ struct audio {
   int silent; // last packet was suppressed (used to generate RTP mark bit)
   char audio_mcast_address_text[256];
   int audio_mcast_fd; // File descriptor for multicast output
-  unsigned long long audio_packets;
+  int rtcp_mcast_fd;  // File descriptor for RTP control protocol
+  struct rtp_state rtp;
 };
 
 

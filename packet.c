@@ -1,4 +1,4 @@
-// $Id: packet.c,v 1.21 2018/08/27 10:48:03 karn Exp $
+// $Id: packet.c,v 1.22 2018/09/05 08:18:22 karn Exp $
 // AFSK/FM packet demodulator
 // Reads RTP PCM audio stream, emits decoded frames in multicast RTP
 // Copyright 2018, Phil Karn, KA9Q
@@ -25,15 +25,13 @@
 // Needs to be redone with common RTP receiver module
 struct session {
   struct session *next; 
-  uint32_t ssrc;            // RTP Sending Source ID
   
   struct sockaddr sender;
   char addr[NI_MAXHOST];    // RTP Sender IP address
   char port[NI_MAXSERV];    // RTP Sender source port
 
-  struct rtp_state rtp_state;
-  uint16_t oseq;            // Output sequence number
-  uint32_t totalbytes;
+  struct rtp_state rtp_state_in;
+  struct rtp_state rtp_state_out;
 
   int input_pointer;
   struct filter_in *filter_in;
@@ -67,7 +65,7 @@ pthread_mutex_t Output_mutex;
 struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
   struct session *sp;
   for(sp = Session; sp != NULL; sp = sp->next){
-    if(sp->ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
+    if(sp->rtp_state_in.ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
       // Found it
       return sp;
     }
@@ -83,7 +81,7 @@ struct session *make_session(struct sockaddr const *sender,uint32_t ssrc){
   
   // Initialize entry
   memcpy(&sp->sender,sender,sizeof(struct sockaddr));
-  sp->ssrc = ssrc;
+  sp->rtp_state_in.ssrc = ssrc;
 
   // Put at head of bucket chain
   sp->next = Session;
@@ -197,27 +195,29 @@ void *decode_task(void *arg){
 		fprintf(stdout,"%d %s %04d %02d:%02d:%02d UTC ",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
 		       tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
 		
-		fprintf(stdout,"ssrc %x packet %d len %d:\n",sp->ssrc,sp->decoded_packets++,bytes);
+		fprintf(stdout,"ssrc %x packet %d len %d:\n",sp->rtp_state_in.ssrc,sp->decoded_packets++,bytes);
 		dump_frame(stdout,hdlc_frame,bytes);
 		fflush(stdout);
 		pthread_mutex_unlock(&Output_mutex);
 	      }
-	      struct rtp_header rtp;
-	      memset(&rtp,0,sizeof(rtp));
-	      rtp.version = 2;
-	      rtp.type = AX25_PT;
-	      rtp.seq = sp->oseq++;
+	      struct rtp_header rtp_hdr;
+	      memset(&rtp_hdr,0,sizeof(rtp_hdr));
+	      rtp_hdr.version = 2;
+	      rtp_hdr.type = AX25_PT;
+	      rtp_hdr.seq = sp->rtp_state_out.seq++;
 	      // RTP timestamp??
-	      rtp.timestamp = sp->totalbytes;
-	      sp->totalbytes += bytes;
-	      rtp.ssrc = sp->ssrc; // Copied from source
+	      rtp_hdr.timestamp = sp->rtp_state_out.timestamp;
+	      sp->rtp_state_out.timestamp += bytes;
+	      rtp_hdr.ssrc = sp->rtp_state_out.ssrc;
 
 	      unsigned char packet[2048],*dp;
 	      dp = packet;
-	      dp = hton_rtp(dp,&rtp);
+	      dp = hton_rtp(dp,&rtp_hdr);
 	      memcpy(dp,hdlc_frame,bytes);
 	      dp += bytes;
-	      send(Output_fd,packet,dp - packet,0);
+	      send(Output_fd,packet,dp - packet,0); // Check return code?
+	      sp->rtp_state_out.packets++;
+	      sp->rtp_state_out.bytes += bytes;
 	    }
 	  }
 	  if(1 || frame_bit != 0){
@@ -307,7 +307,7 @@ int main(int argc,char *argv[]){
   int input_fd[Nfds];    // Multicast receive sockets
 
   for(int i=0;i<Nfds;i++){
-    input_fd[i] = setup_mcast(Mcast_address_text[i],0);
+    input_fd[i] = setup_mcast(Mcast_address_text[i],0,0);
     if(input_fd[i] == -1){
       fprintf(stderr,"Can't set up input %s\n",Mcast_address_text[i]);
       continue;
@@ -316,7 +316,7 @@ int main(int argc,char *argv[]){
       max_fd = input_fd[i];
     FD_SET(input_fd[i],&fdset_template);
   }
-  Output_fd = setup_mcast(Decode_mcast_address_text,1);
+  Output_fd = setup_mcast(Decode_mcast_address_text,1,0);
   if(Output_fd == -10){
     fprintf(stderr,"Can't set up output to %s\n",
 	    Decode_mcast_address_text);
@@ -324,7 +324,7 @@ int main(int argc,char *argv[]){
   }
   pthread_mutex_init(&Output_mutex,NULL);
 
-  struct rtp_header rtp;
+  struct rtp_header rtp_hdr;
   struct sockaddr sender;
   // audio input thread
   // Receive audio multicasts, multiplex into sessions, execute filter front end (which wakes up decoder thread)
@@ -357,38 +357,39 @@ int main(int argc,char *argv[]){
       }
       // Extract RTP header
       unsigned char *dp = buffer;
-      dp = ntoh_rtp(&rtp,dp);
+      dp = ntoh_rtp(&rtp_hdr,dp);
       size -= dp - buffer;
       
-      if(rtp.pad){
+      if(rtp_hdr.pad){
 	// Remove padding
 	size -= dp[size-1];
-	rtp.pad = 0;
+	rtp_hdr.pad = 0;
       }
       
-      if(rtp.type != PCM_MONO_PT)
+      if(rtp_hdr.type != PCM_MONO_PT)
 	continue; // Only mono PCM for now
       
-      struct session *sp = lookup_session(&sender,rtp.ssrc);
+      struct session *sp = lookup_session(&sender,rtp_hdr.ssrc);
       if(sp == NULL){
 	// Not found
-	if((sp = make_session(&sender,rtp.ssrc)) == NULL){
+	if((sp = make_session(&sender,rtp_hdr.ssrc)) == NULL){
 	  fprintf(stdout,"No room for new session!!\n");
 	  fflush(stdout);
 	  continue;
 	}
+	sp->rtp_state_out.ssrc = sp->rtp_state_in.ssrc = rtp_hdr.ssrc;
 	getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
 		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
 	sp->input_pointer = 0;
 	sp->filter_in = create_filter_input(AL,AM,REAL);
 	pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
 	if(Verbose){
-	  fprintf(stdout,"New session from %s, ssrc %x\n",sp->addr,sp->ssrc);
+	  fprintf(stdout,"New session from %s, ssrc %x\n",sp->addr,sp->rtp_state_in.ssrc);
 	  fflush(stdout);
 	}
       }
       int sample_count = size / sizeof(signed short); // 16-bit sample count
-      int skipped_samples = rtp_process(&sp->rtp_state,&rtp,sample_count);
+      int skipped_samples = rtp_process(&sp->rtp_state_in,&rtp_hdr,sample_count);
       if(skipped_samples < 0)
 	continue;	// Drop probable duplicate(s)
       

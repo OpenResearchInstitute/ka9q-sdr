@@ -1,4 +1,4 @@
-# $Id: Makefile.osx,v 1.53 2018/09/03 04:52:45 karn Exp $
+# $Id: Makefile.osx,v 1.54 2018/09/05 08:19:38 karn Exp $
 CFLAGS=-g -O3 -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
@@ -66,7 +66,7 @@ libfcd.a: fcd.o hid-libusb.o
 	ar rv $@ $?
 	ranlib $@
 
-libradio.a: ax25.o multicast.o decimate.o filter.o attr.o dsp.o misc.o
+libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o rtcp.o
 	ar rv $@ $?
 	ranlib $@
 
@@ -80,6 +80,7 @@ modulate.o: modulate.c misc.h filter.h radio.h sdr.h
 monitor.o: monitor.c misc.h multicast.h
 opus.o: opus.c misc.h multicast.h
 opussend.o: opussend.c misc.h multicast.h
+packet.o: packet.c filter.h misc.h multicast.h ax25.h dsp.h
 pcmcat.o: pcmcat.c multicast.h
 pcmsend.o: pcmsend.c misc.h multicast.h
 
@@ -96,8 +97,7 @@ filter.o: filter.c misc.h filter.h dsp.h
 knob.o: knob.c misc.h
 misc.o: misc.c misc.h 
 multicast.o: multicast.c multicast.h misc.h
-packet.o: packet.c filter.h misc.h multicast.h ax25.h
-radio.o: radio.c radio.h sdr.h filter.h misc.h 
+rtcp.o: rtcp.c multicast.h
 touch.o: touch.c misc.h
 
 # Components of radio
@@ -112,3 +112,4 @@ linear.o: linear.c misc.h filter.h radio.h sdr.h
 main.o: main.c radio.h sdr.h filter.h misc.h  multicast.h dsp.h
 misc.o: misc.c radio.h sdr.h
 modes.o: modes.c radio.h sdr.h misc.h
+radio.o: radio.c radio.h sdr.h filter.h misc.h

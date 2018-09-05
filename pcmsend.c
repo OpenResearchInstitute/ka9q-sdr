@@ -1,4 +1,4 @@
-// $Id: pcmsend.c,v 1.7 2018/08/29 01:34:15 karn Exp $
+// $Id: pcmsend.c,v 1.8 2018/09/05 08:18:22 karn Exp $
 // Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -196,19 +196,19 @@ int main(int argc,char * const argv[]){
 
 
   // Set up multicast transmit socket
-  Output_fd = setup_mcast(Mcast_output_address_text,1);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
   }
   // Set up to transmit RTP/UDP/IP
 
+  struct rtp_state rtp_state_out;
+  memset(&rtp_state_out,0,sizeof(rtp_state_out));
 
-  unsigned long timestamp = 0;
-  unsigned short seq = 0;
   struct timeval tp;
   gettimeofday(&tp,NULL);
-  unsigned long ssrc = tp.tv_sec;
+  rtp_state_out.ssrc = tp.tv_sec;
 
   // Graceful signal catch
   signal(SIGPIPE,closedown);
@@ -234,27 +234,28 @@ int main(int argc,char * const argv[]){
 	delay /= 2; // Minimum sleep time 0.2 ms
       usleep(delay);
     }
-    struct rtp_header rtp_out;
-    memset(&rtp_out,0,sizeof(rtp_out));
-    rtp_out.version = RTP_VERS;
-    rtp_out.type = PCM_STEREO_PT;
-    rtp_out.seq = seq;
-    rtp_out.ssrc = ssrc;
-    rtp_out.timestamp = timestamp;
+    struct rtp_header rtp_hdr;
+    memset(&rtp_hdr,0,sizeof(rtp_hdr));
+    rtp_hdr.version = RTP_VERS;
+    rtp_hdr.type = PCM_STEREO_PT;
+    rtp_hdr.seq = rtp_state_out.seq;
+    rtp_hdr.ssrc = rtp_state_out.ssrc;
+    rtp_hdr.timestamp = rtp_state_out.timestamp;
 
     unsigned char buffer[16384]; // Pick better number
     unsigned char *dp = buffer;
-    dp = hton_rtp(dp,&rtp_out);
+    dp = hton_rtp(dp,&rtp_hdr);
     signed short *samples = (signed short *)dp;
     for(int i=0; i < Channels * FRAMESIZE; i++){
       *samples++ = htons(scaleclip(Audiodata[rptr++]));
       rptr &= (BUFFERSIZE-1);
     }
     dp += Channels * FRAMESIZE * sizeof(*samples);
-    send(Output_fd,buffer,dp - buffer,0);
-    seq++;
-
-    timestamp += FRAMESIZE;
+    send(Output_fd,buffer,dp - buffer,0); // should probably check return code
+    rtp_state_out.packets++;
+    rtp_state_out.bytes += Channels * FRAMESIZE * sizeof(signed short);
+    rtp_state_out.seq++;
+    rtp_state_out.timestamp += FRAMESIZE;
   }
   close(Output_fd);
   exit(0);

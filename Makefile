@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.117 2018/09/03 04:52:26 karn Exp $
+# $Id: Makefile,v 1.118 2018/09/05 08:19:38 karn Exp $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 #COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
@@ -68,7 +68,7 @@ libfcd.a: fcd.o hid-libusb.o
 	ar rv $@ $^
 	ranlib $@
 
-libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o
+libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o rtcp.o
 	ar rv $@ $^
 	ranlib $@
 
@@ -99,6 +99,7 @@ dsp.o: dsp.c dsp.h
 filter.o: filter.c misc.h filter.h
 misc.o: misc.c radio.h sdr.h
 multicast.o: multicast.c multicast.h
+rtcp.o: rtcp.c multicast.h
 
 # Components of main program 'radio'
 am.o: am.c misc.h filter.h radio.h  sdr.h
