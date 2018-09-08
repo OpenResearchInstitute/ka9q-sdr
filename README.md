@@ -1,6 +1,6 @@
 # ka9q-radio
 
-Overview
+## Overview
 
 Ka9q-radio is a collection of software defined radio (SDR) modules
 connected by the Internet Real Time Protocol (RTP) and IP
@@ -14,7 +14,14 @@ The ka9q-radio modules execute from the command line on either Linux
 or OSX.  As yet there is no fancy graphical user interface. (This may
 come later, especially if someone volunteers to create one).
 
-Multicasting and the Real Time Protocol (RTP)
+## License
+The License for this software is GPL3, as detailed [here](LICENSE).
+
+
+## Installation
+Installation instructions are [here](INSTALLING.md).
+
+## Multicasting and the Real Time Protocol (RTP)
 
 The ka9q-radio modules are designed for maximum versatility.  Unlike
 shell pipelines or TCP/IP connections, ka9q-radio modules can be
@@ -46,12 +53,12 @@ as there would be no analog audio cables (real or "virtual"),
 or tricky level adjustments! With multicasting, any number of programs
 can simultaneously process the same receiver output.
 
-Parts of the ka9q-radio package should also be well suited to
-"turnkey" networked receiver applications such as receive-only
-APRS-to-Internet gateways and Broadcastify feeds. The modules can be
-automatically invoked by shell scripts without user intervention.
+Parts of the ka9q-radio package are well suited to "turnkey" networked
+receiver applications such as receive-only APRS-to-Internet gateways
+and Broadcastify feeds. Service descriptions are provided for Linux
+udev and systemd to load the daemons at boot time.
 
-Opus Compression and Audio Monitoring
+## Opus Compression and Audio Monitoring
 
 Although PCM is best for digital decoders, it requires 800 kb/s for
 mono and 1.6 Mb/s for stereo.  Much lower data rates suffice for human
@@ -81,7 +88,29 @@ stereo image. This makes it easier to distinguish multiple sources,
 e.g., in a round table. The 'monitor' program currently supports only
 Opus and PCM, though CODEC2 is again on the list.
 
-The KA9Q 'radio' program
+Direct, low-latency access to multicast data on remote networks
+requires some form of IP multicast routing or tunneling that is not
+(yet) provided in this package.  The remote multicast data you are
+most likely to want is audio, so here's a simple workaround for remote
+listening:
+
+ssh remotesys 'pcmcat -2 pcm.vhf.mcast.local | opusenc --quiet --raw --bitrate 32 - -' | play -q -
+
+This remotely executes the 'pcmcat' command, which picks up the
+specified multicast group (which must be PCM audio with RTP types 10
+or 11), forces the output to be stereo (which opusenc expects by
+default), and compresses it with the Opus codec to 32 kb/s. The
+compressed audio is then sent over the SSH channel to your local computer
+where the 'play' program decompresses and plays the audio. This
+requires the 'opus-tools' package on the remote system and the 'sox'
+package on the local system. Latency can be several seconds because of
+shell pipeline and TCP buffering.
+
+There's no performance penalty to running Opus in stereo mode on mono
+data, so for simplicity the ka9q-radio package always uses Opus in
+this way.
+
+## The KA9Q 'radio' program
 
 The heart of the ka9q-radio package is the program 'radio', an
 interactive general coverage receiver. It reads raw I/Q data multicast
@@ -99,7 +128,7 @@ makes it easy and fast to run remotely. If desired, the interactive
 interface can be disabled entirely and all parameters given instead on
 the command line (e.g., in shell scripts).
 
-Architecture
+## Architecture
 
 The 'radio' program accepts a generic I/Q (complex) sample stream
 multicast by a computer with a direct conversion ("zero IF") SDR front
@@ -115,7 +144,7 @@ network load; this is no problem for modern Ethernet but it should be
 kept away from inexpensive WiFi base stations and public Internets.
 (More on problems with multicast and WiFi in the end notes).
 
-Hardware Artifact Removal
+## Hardware Artifact Removal
 
 Although most SDR front ends use direct conversion, the complete SDR
 front end/ka9q receiver combination actually forms a dual-conversion
@@ -162,7 +191,11 @@ the FCD are 0.07 dB of gain imbalance and 0.4 degrees of
 phase error, i.e., deviation from exactly 90 degrees between the two
 channels.
 
-Frequency conversion
+Hardware artifact removal was recently added to the 'funcube' and
+'hackrf' modules. It is still present in 'radio' but is disabled by
+default.
+
+## Frequency conversion
 
 The third step is to convert the first IF signal to baseband, i.e., a
 carrier frequency of 0 Hz. This is performed by the second (software)
@@ -186,7 +219,7 @@ staying in a narrow CW filter. (Of course, this requires accurate
 orbital elements and current clock time. It might be possible to use
 observed frequency errors to correct a set of orbital elements.)
 
-Filtering and Demodulation
+## Filtering and Demodulation
 
 The baseband signal is filtered with fast correlation.  With complex
 signals, the passband can be asymmetric, e.g., +100 to +3000 Hz
@@ -201,14 +234,14 @@ interference.
 The filtered baseband signal is then fed to one of three demodulators:
 'AM', 'FM' and 'Linear.'
 
-AM Demodulator
+### AM Demodulator
 
 The AM demodulator is an ordinary non-coherent envelope detector that
 simply measures the amplitude of the complex baseband signal, ignoring
 the phase.  A squelch needs to be added to make it usable for aviation
 communications.
 
-FM Demodulator
+### FM Demodulator
 
 The FM demodulator handles narrow-band frequency or phase modulation by
 taking the phase of a baseband signal with the arctangent function and
@@ -253,7 +286,7 @@ the sample count. The RTP timestamp indicates how many silent samples
 were suppressed. This allows programs using the input stream for
 timing to maintain a proper sample count.
 
-Linear Demodulation
+### Linear Demodulation
 
 The 'linear' detector is used for all other modes, including SSB/CW,
 ISB (independent sideband) and raw I/Q. In linear mode the filter
@@ -272,20 +305,19 @@ lower sideband on the I (left) channel and the upper sideband on Q
 
 A PLL can coherently track an AM carrier for synchronous detection,
 which is usually much less noisy than regular AM envelope
-detection. In "calibrate" mode the PLL adjusts the TCXO error estimate
-to bring the carrier to exactly the tuned frequency.  This is useful
-for automatic calibration of the SDR TCXO against an external
+detection. The carrier frequency offset is averaged and displayed;
+This is useful for calibration of the SDR TCXO against an external
 reference such as WWV/WWVH or the pilot carrier of a local ATSC
 digital TV transmitter.
 
 A squarer can be enabled so the PLL can track the suppressed carrier
 in DSB-AM and BPSK.
 
-User Interface
+## User Interface
 
 The 'radio' program has a textual user interface that uses the
 "ncurses" library. It looks primitive by 2018 standards, but it is
-fully functional and very efficient over slow Internet paths. The 'h'
+fully functional and very efficient over slow Internet paths. The `h`
 key pops up a summary of commands. The textual user interface can also
 be completely disabled and all receiver parameters given on the
 command line, e.g, for invocation from a shell script in a dedicated
@@ -301,7 +333,7 @@ restarting it.
 
 Invoking 'radio' with the name of a startup file loads its
 settings. The state of the radio can be saved to a state file with the
-'w' key. On normal termination the radio state is also stored as
+`w` key. On normal termination the radio state is also stored as
 "default". It will be automatically loaded on the next invocation if
 no explicit name is given.
 
@@ -322,7 +354,7 @@ here but cannot be modified by the user.
 
 The user can change frequency with the arrow keys, a Griffin Power Mate
 USB knob, a mouse wheel, or by typing a complete frequency into the
-pop up window invoked with the 'f' command. The cursor indicates the
+pop up window invoked with the `f` command. The cursor indicates the
 digit that will change with the USB knob, mouse wheel or up and down
 arrow keys. The cursor can be moved to a different digit with the left
 and right arrow keys, and it can be moved to the next field with the
@@ -353,7 +385,7 @@ provided they share the same frequency range. When there is a
 conflict, the last radio to re-tune the SDR LO wins. The other copies
 will not try to fight it; without further user input they will simply
 wait until the LO is again within range. To avoid unintentional
-changes in the LO frequency, tab to the First LO field and hit the 'l'
+changes in the LO frequency, tab to the First LO field and hit the `l`
 key; this will underline the entry to indicate that the field is
 locked. The Carrier/Center frequency fields can also be locked.
 
@@ -392,7 +424,7 @@ the "Signal" window so they may not exactly match.)
 
 The "Options" window selects the various options for the "Linear"
 demodulator. You can select an entry with the mouse or type the mode
-into a pop up box with the 'o' command.
+into a pop up box with the `o` command.
 
 The output-only "SDR Hardware" window shows the nominal A/D sample
 rate, TCXO offset, nominal tuner frequency (uncorrected by the TCXO
@@ -411,42 +443,92 @@ against the local computer time-of-day clock.
 A "Debug" area at the very bottom of the screen shows version
 information and various test and debugging messages.
 
-Textual user input entered through pop up menus; for example the 'f'
+Textual user input entered through pop up menus; for example the `f`
 key pops up a box into which a frequency can be directly entered as
-"147m435" (147.435 MHz), "760k" (760 kHz) or "1g296296" (1296.296
+`147m435` (147.435 MHz), `760k` (760 kHz) or `1g296296` (1296.296
 MHz). If no letters are used to indicate the magnitude of the decimal
 point, a 'best guess' is made to produce a valid frequency; e.g. 14313
 will give 14.313 MHz, not 14.313 kHz (which is below the FCD's
-range). Note that some ranges are inherently ambiguous; e.g., "500"
+range). Note that some ranges are inherently ambiguous; e.g., `500`
 could be either 500 kHz or 500 MHz so they should be typed with
 explicit decimal points.
 
-Other ka9q-radio Modules
+## 'radio' in quiet/daemon mode
+
+The 'radio' program can run in a totally 'quiet' mode with no user
+interface. This is suitable for automatic execution at boot time for
+fixed channel operation (e.g., receiving and reporting APRS
+transmissions). Two Linux systemd service descriptions are provided:
+'radio34' and 'radio39'; the first creates an instance of 'radio'
+listening on 144.39 MHz in FM mode and the latter does the same on
+144.39 MHz.  Thise two instances can share the same Funcube dongle
+because their frequencies are only 50 kHz apart, within the 192 kHz
+bandwidth of the Funcube dongle.
+
+144.39 MHz is the standard APRS frequency for North America; 144.34 MHz is
+the secondary APRS frequency used by WB8ELK's 15-gram 'pico tracker' for
+long duration balloon flights.
+
+## Other ka9q-radio Modules
 
 Other modules in the package provide miscellaneous functions and/or
 start more complex planned features. None have especially
 complex user interfaces; most take only a few command line arguments
 and can run as background daemons. They are given in alphabetical order
 
-"aprs"
+### aprs
 
-This unfinished module accepts decoded AX.25 frames from the "packet'
+This unfinished module accepts decoded AX.25 frames from the 'packet'
 module, extracts APRS position data from a selected station, computes
 the azimuth, elevation and range to that station from a specified
 point, and commands antenna rotors to point at the transmitting
 station. This was written specifically for tracking high altitude
 balloons.
 
-'funcube'
+### aprsfeed
 
-This module takes I/Q data from a locally connected FCD and multicasts
+This module also accepts decoded AX.25 frames from the 'packet'
+module. It feeds those frames to the international APRS network so
+position reports will automatically appear on sites such as
+www.aprs.fi. It can be run as a background daemon.
+
+### funcube
+
+This module takes the digital IF from a locally connected FCD and multicasts
 it over the local LAN. It accepts unicast commands to tune the radio
 and set analog gains. It will automatically reduce gain to avoid A/D
 saturation. Similar modules will be written for other SDR front ends
 such as the SDRPlay and RTL-SDR that will either talk directly to the
 hardware or through "shimware" such as SoapySDR.
 
-'iqrecord' and 'iqplay"
+The 'funcube' module can be automatically loaded at boot time (or at
+device insertion) as a background daemon by the Linux udev/systemd
+subsystem. A udev rule file and a systemd service file are
+provided. Note that the latter specifies the multicast group for the
+digital IF data, and this will probably require local configuration.
+
+In daemon mode, 'funcube' writes its status to /run/funcube#/status,
+where '#' is the device number (starting at 0). Scripts for two
+devices are provided. The Raspberry Pi can support two devices, but I
+prefer one Pi per dongle when possible.
+
+### hackrf
+
+This module is functionally equivalent to'funcube' except for the
+HackRF One. Only reception is currently supported. The HackRF supports
+sample rates up to 20 MHz but has only a 8-bit A/D, so by default it
+samples at a high speed and decimates to 192 kHz, the same as the
+funcube. The USB data rate and decimation processing load is too great
+for a Raspberry Pi, but it will run on a low-end x86 system.
+
+Like 'funcube', 'hackrf' can be automatically loaded at boot time
+under Linux.
+
+In daemon mode, 'hackrf' writes its status to /run/hackrf0/status.
+(Only one hackrf device is currently supported, but this can be
+changed.)
+
+### iqrecord and iqplay
 
 These modules perform the functions suggested by their
 names. 'iqrecord' accepts multicast I/Q or PCM audio streams and
@@ -494,13 +576,13 @@ at present) using the meta data contained in the external file
 attributes. It can also read a raw I/Q sample stream from standard input to
 simulate SDR front end hardware.
 
-'modulate'
+### modulate
 
 A simple (and unfinished) test modulator that takes baseband audio,
 amplitude modulates it on a specified carrier frequency, and emits it
 on standard output as an I/Q sample stream.
 
-'opus'
+### opus
 
 The 'opus' module was described earlier as an optional "transcoder"
 that accepts uncompressed PCM (either mono or stereo) and produces a
@@ -526,29 +608,40 @@ discontinuous setting.
 Opus streams are always stereo even when the audio is mono. There is
 no capacity penalty and it simplifies things.
 
-'opussend'
+'Opus' can be run as a daemon; systemd 'service' config files are provided.
+
+### opussend
 
 This is a standalone utility that takes PCM audio from a local sound interface,
 compresses it with Opus and multicasts it as an RTP network stream.
 
-'packet'
+### packet
 
 This module is my first digital demodulator module for the ka9q-radio
 package. It accepts PCM audio from the 'radio' program, demodulates
 the ancient Bell 202A AFSK modem tones and decodes AX.25 frames.  The
-decoded frames are multicast in UDP packets that do not currently have
-RTP headers; this will probably change. The decoded frames can also
-optionally be displayed on the console. Otherwise the module can run
-as an unattended daemon.
+decoded frames are multicast as RTP/UDP packets.  The decoded frames
+can also optionally be displayed on the console. Otherwise the module
+can run as an unattended daemon.
 
-'pcmsend'
+'Packet' can be run as a daemon; a systemd 'service' file is provided.
+
+### pcmsend
 
 This is the same as opussend, except that the output stream is
 uncompressed 48 kHz PCM (mono or stereo).
 
-Footnotes and Side bars
+### pcmcat
 
-Sample Rates and Decimation
+This joins a specified multicast group, which must carry uncompressed
+PCM audio (RTP types 10 or 11) and emits the PCM stream on standard
+output.  This is useful for piping into an audio compressor for remote
+transmission.
+
+
+## Footnotes and Side bars
+
+### Sample Rates and Decimation
 
 The I/Q input sample rate must be an integer multiple of the 48 kHz
 audio output rate.  Decimation is performed as a byproduct of the fast
@@ -579,7 +672,7 @@ so they can be given uncompressed PCM.  (Audio compression works by
 eliminating signal components inaudible to the human ear, but which
 may be very important for a digital demodulator.)
 
-Filter Tradeoffs
+### Filter Tradeoffs
 
 Simultaneously improving both filter roll off and stop-band attenuation
 requires a longer FIR impulse response. This requires greater latency
@@ -594,7 +687,7 @@ block size of 3840 corresponds to 960 samples after 4:1 decimation to
 can handle any number of points, a power of 2 is more efficient. I've
 found the default parameters to be suitable for most purposes.
 
-Fractional-N Frequency Synthesizer Artifacts
+### Fractional-N Frequency Synthesizer Artifacts
 
 Because the first LO in the FCD is in analog hardware with
 the usual synthesizer tuning glitches, it is re tuned only when
@@ -623,7 +716,7 @@ LO. Although these two fixes are specific to the FCD, other
 SDRs undoubtedly have the same problem subject to the same workarounds
 -- if I can get the necessary details.
 
-Multicasting and WiFi
+### Multicasting and WiFi
 
 High speed multicast streams can cause problems with many consumer
 grade WiFi base stations. Although multicasting is widely used for
@@ -718,4 +811,5 @@ require that any other programs that need a PCM audio input also run
 on the same physical machine.
 
 
+Updated 8 Sept 2018, Phil Karn, KA9Q
 
