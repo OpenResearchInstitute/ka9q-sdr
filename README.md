@@ -53,10 +53,10 @@ as there would be no analog audio cables (real or "virtual"),
 or tricky level adjustments! With multicasting, any number of programs
 can simultaneously process the same receiver output.
 
-Parts of the ka9q-radio package should also be well suited to
-"turnkey" networked receiver applications such as receive-only
-APRS-to-Internet gateways and Broadcastify feeds. The modules can be
-automatically invoked by shell scripts without user intervention.
+Parts of the ka9q-radio package are well suited to "turnkey" networked
+receiver applications such as receive-only APRS-to-Internet gateways
+and Broadcastify feeds. Service descriptions are provided for Linux
+udev and systemd to load the daemons at boot time.
 
 ## Opus Compression and Audio Monitoring
 
@@ -87,6 +87,28 @@ adjustments (<1 ms) to place each source at a user-chosen point in a
 stereo image. This makes it easier to distinguish multiple sources,
 e.g., in a round table. The 'monitor' program currently supports only
 Opus and PCM, though CODEC2 is again on the list.
+
+Direct, low-latency access to multicast data on remote networks
+requires some form of IP multicast routing or tunneling that is not
+(yet) provided in this package.  The remote multicast data you are
+most likely to want is audio, so here's a simple workaround for remote
+listening:
+
+ssh remotesys 'pcmcat -2 pcm.vhf.mcast.local | opusenc --quiet --raw --bitrate 32 - -' | play -q -
+
+This remotely executes the 'pcmcat' command, which picks up the
+specified multicast group (which must be PCM audio with RTP types 10
+or 11), forces the output to be stereo (which opusenc expects by
+default), and compresses it with the Opus codec to 32 kb/s. The
+compressed audio is then sent over the SSH channel to your local computer
+where the 'play' program decompresses and plays the audio. This
+requires the 'opus-tools' package on the remote system and the 'sox'
+package on the local system. Latency can be several seconds because of
+shell pipeline and TCP buffering.
+
+There's no performance penalty to running Opus in stereo mode on mono
+data, so for simplicity the ka9q-radio package always uses Opus in
+this way.
 
 ## The KA9Q 'radio' program
 
@@ -168,6 +190,10 @@ Q channels, and this is its second processing step. Typical values for
 the FCD are 0.07 dB of gain imbalance and 0.4 degrees of
 phase error, i.e., deviation from exactly 90 degrees between the two
 channels.
+
+Hardware artifact removal was recently added to the 'funcube' and
+'hackrf' modules. It is still present in 'radio' but is disabled by
+default.
 
 ## Frequency conversion
 
@@ -279,9 +305,8 @@ lower sideband on the I (left) channel and the upper sideband on Q
 
 A PLL can coherently track an AM carrier for synchronous detection,
 which is usually much less noisy than regular AM envelope
-detection. In "calibrate" mode the PLL adjusts the TCXO error estimate
-to bring the carrier to exactly the tuned frequency.  This is useful
-for automatic calibration of the SDR TCXO against an external
+detection. The carrier frequency offset is averaged and displayed;
+This is useful for calibration of the SDR TCXO against an external
 reference such as WWV/WWVH or the pilot carrier of a local ATSC
 digital TV transmitter.
 
@@ -428,6 +453,22 @@ range). Note that some ranges are inherently ambiguous; e.g., `500`
 could be either 500 kHz or 500 MHz so they should be typed with
 explicit decimal points.
 
+## 'radio' in quiet/daemon mode
+
+The 'radio' program can run in a totally 'quiet' mode with no user
+interface. This is suitable for automatic execution at boot time for
+fixed channel operation (e.g., receiving and reporting APRS
+transmissions). Two Linux systemd service descriptions are provided:
+'radio34' and 'radio39'; the first creates an instance of 'radio'
+listening on 144.39 MHz in FM mode and the latter does the same on
+144.39 MHz.  Thise two instances can share the same Funcube dongle
+because their frequencies are only 50 kHz apart, within the 192 kHz
+bandwidth of the Funcube dongle.
+
+144.39 MHz is the standard APRS frequency for North America; 144.34 MHz is
+the secondary APRS frequency used by WB8ELK's 15-gram 'pico tracker' for
+long duration balloon flights.
+
 ## Other ka9q-radio Modules
 
 Other modules in the package provide miscellaneous functions and/or
@@ -437,21 +478,55 @@ and can run as background daemons. They are given in alphabetical order
 
 ### aprs
 
-This unfinished module accepts decoded AX.25 frames from the "packet'
+This unfinished module accepts decoded AX.25 frames from the 'packet'
 module, extracts APRS position data from a selected station, computes
 the azimuth, elevation and range to that station from a specified
 point, and commands antenna rotors to point at the transmitting
 station. This was written specifically for tracking high altitude
 balloons.
 
+### aprsfeed
+
+This module also accepts decoded AX.25 frames from the 'packet'
+module. It feeds those frames to the international APRS network so
+position reports will automatically appear on sites such as
+www.aprs.fi. It can be run as a background daemon.
+
 ### funcube
 
-This module takes I/Q data from a locally connected FCD and multicasts
+This module takes the digital IF from a locally connected FCD and multicasts
 it over the local LAN. It accepts unicast commands to tune the radio
 and set analog gains. It will automatically reduce gain to avoid A/D
 saturation. Similar modules will be written for other SDR front ends
 such as the SDRPlay and RTL-SDR that will either talk directly to the
 hardware or through "shimware" such as SoapySDR.
+
+The 'funcube' module can be automatically loaded at boot time (or at
+device insertion) as a background daemon by the Linux udev/systemd
+subsystem. A udev rule file and a systemd service file are
+provided. Note that the latter specifies the multicast group for the
+digital IF data, and this will probably require local configuration.
+
+In daemon mode, 'funcube' writes its status to /run/funcube#/status,
+where '#' is the device number (starting at 0). Scripts for two
+devices are provided. The Raspberry Pi can support two devices, but I
+prefer one Pi per dongle when possible.
+
+### hackrf
+
+This module is functionally equivalent to'funcube' except for the
+HackRF One. Only reception is currently supported. The HackRF supports
+sample rates up to 20 MHz but has only a 8-bit A/D, so by default it
+samples at a high speed and decimates to 192 kHz, the same as the
+funcube. The USB data rate and decimation processing load is too great
+for a Raspberry Pi, but it will run on a low-end x86 system.
+
+Like 'funcube', 'hackrf' can be automatically loaded at boot time
+under Linux.
+
+In daemon mode, 'hackrf' writes its status to /run/hackrf0/status.
+(Only one hackrf device is currently supported, but this can be
+changed.)
 
 ### iqrecord and iqplay
 
@@ -533,6 +608,8 @@ discontinuous setting.
 Opus streams are always stereo even when the audio is mono. There is
 no capacity penalty and it simplifies things.
 
+'Opus' can be run as a daemon; systemd 'service' config files are provided.
+
 ### opussend
 
 This is a standalone utility that takes PCM audio from a local sound interface,
@@ -543,15 +620,24 @@ compresses it with Opus and multicasts it as an RTP network stream.
 This module is my first digital demodulator module for the ka9q-radio
 package. It accepts PCM audio from the 'radio' program, demodulates
 the ancient Bell 202A AFSK modem tones and decodes AX.25 frames.  The
-decoded frames are multicast in UDP packets that do not currently have
-RTP headers; this will probably change. The decoded frames can also
-optionally be displayed on the console. Otherwise the module can run
-as an unattended daemon.
+decoded frames are multicast as RTP/UDP packets.  The decoded frames
+can also optionally be displayed on the console. Otherwise the module
+can run as an unattended daemon.
+
+'Packet' can be run as a daemon; a systemd 'service' file is provided.
 
 ### pcmsend
 
 This is the same as opussend, except that the output stream is
 uncompressed 48 kHz PCM (mono or stereo).
+
+### pcmcat
+
+This joins a specified multicast group, which must carry uncompressed
+PCM audio (RTP types 10 or 11) and emits the PCM stream on standard
+output.  This is useful for piping into an audio compressor for remote
+transmission.
+
 
 ## Footnotes and Side bars
 
@@ -725,4 +811,5 @@ require that any other programs that need a PCM audio input also run
 on the same physical machine.
 
 
+Updated 8 Sept 2018, Phil Karn, KA9Q
 
