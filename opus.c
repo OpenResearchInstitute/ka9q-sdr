@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.22 2018/07/19 00:02:24 karn Exp $
+// $Id: opus.c,v 1.25 2018/09/08 06:06:21 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -22,55 +22,51 @@
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-char *Mcast_input_address_text = "audio-pcm-mcast.local";     // Multicast address we're listening to
-char *Mcast_output_address_text = "audio-opus-mcast.local";     // Multicast address we're sending to
-
-int const Bufsize = 8192;     // Maximum samples/words per RTP packet - must be bigger than Ethernet MTU
-int const Samprate = 48000;   // Too hard to handle other sample rates right now
-                              // Opus will notice the actual audio bandwidth, so there's no real cost to this
-int Verbose;                  // Verbosity flag (currently unused)
-
-int Input_fd = -1;            // Multicast receive socket
-int Output_fd = -1;           // Multicast receive socket
-float Opus_blocktime = 20;    // 20 ms, a reasonable default
-int Opus_frame_size;
-int Opus_bitrate = 32;        // Opus stream audio bandwidth; default 32 kb/s
-int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
-int Discontinuous = 0;        // Off by default
-int Fec = 0;                  // Use forward error correction
-
-
-float const SCALE = 1./SHRT_MAX;
-
-
 struct session {
   struct session *prev;       // Linked list pointers
   struct session *next; 
-  uint32_t ssrc;            // RTP Sending Source ID
-  uint16_t eseq;            // Next expected RTP input sequence number
-  uint32_t etimestamp;      // Next expected RTP input timestamp
   int type;                 // input RTP type (10,11)
   
   struct sockaddr sender;
   char addr[NI_MAXHOST];    // RTP Sender IP address
   char port[NI_MAXSERV];    // RTP Sender source port
 
-  struct rtp_state rtp_state; // RTP input state
+  struct rtp_state rtp_state_in; // RTP input state
   OpusEncoder *opus;        // Opus encoder handle
   int silence;              // Currently suppressing silence
 
   float *audio_buffer;      // Buffer to accumulate PCM until enough for Opus frame
   int audio_index;          // Index of next sample to write into audio_buffer
 
-  uint32_t output_timestamp;
-  uint16_t output_seq;
+  struct rtp_state rtp_state_out; // RTP output state
 
   unsigned long underruns;  // Callback count of underruns (stereo samples) replaced with silence
 };
+
+
+// Global config variables
+int const Bufsize = 8192;     // Maximum samples/words per RTP packet - must be bigger than Ethernet MTU
+int const Samprate = 48000;   // Too hard to handle other sample rates right now
+                              // Opus will notice the actual audio bandwidth, so there's no real cost to this
+
+int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
+float const SCALE = 1./SHRT_MAX;
+
+// Command line params
+char *Mcast_input_address_text;     // Multicast address we're listening to
+char *Mcast_output_address_text;    // Multicast address we're sending to
+int Verbose;                  // Verbosity flag (currently unused)
+int Opus_bitrate = 32;        // Opus stream audio bandwidth; default 32 kb/s
+int Discontinuous = 0;        // Off by default
+float Opus_blocktime = 20;    // 20 ms, a reasonable default
+int Fec = 0;                  // Use forward error correction
+int Mcast_ttl = 10;           // our multicast output is frequently routed
+
+// Global variables
+int Input_fd = -1;            // Multicast receive socket
+int Output_fd = -1;           // Multicast receive socket
+int Opus_frame_size;
 struct session *Audio;
-
-
 
 void closedown(int);
 struct session *lookup_session(const struct sockaddr *,uint32_t);
@@ -80,6 +76,7 @@ int send_samples(struct session *sp,float left,float right);
 
 
 int main(int argc,char * const argv[]){
+#if 0   // Better handled in systemd?
   // Try to improve our priority
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -87,6 +84,7 @@ int main(int argc,char * const argv[]){
   // Drop root if we have it
   if(seteuid(getuid()) != 0)
     perror("setuid");
+#endif
 
   setlocale(LC_ALL,getenv("LANG"));
 
@@ -119,8 +117,8 @@ int main(int argc,char * const argv[]){
       Discontinuous = 1;
       break;
     default:
-      fprintf(stderr,"Usage: %s [-x] [-v] [-o bitrate] [-B blocktime] [-I input_mcast_address] [-R output_mcast_address][-T mcast_ttl]\n",argv[0]);
-      fprintf(stderr,"Defaults: %s -o %d -B %.1f -I %s -R %s -T %d\n",argv[0],Opus_bitrate,Opus_blocktime,Mcast_input_address_text,Mcast_output_address_text,Mcast_ttl);
+      fprintf(stderr,"Usage: %s [-x] [-v] [-o bitrate] [-B blocktime] [-T mcast_ttl] -I input_mcast_address -R output_mcast_address\n",argv[0]);
+      fprintf(stderr,"Defaults: %s -o %d -B %.1f -I (none) -R (none) -T %d\n",argv[0],Opus_bitrate,Opus_blocktime,Mcast_ttl);
       exit(1);
     }
   }
@@ -138,19 +136,23 @@ int main(int argc,char * const argv[]){
     Opus_bitrate *= 1000; // Assume it was given in kb/s
 
   // Set up multicast
-  Input_fd = setup_mcast(Mcast_input_address_text,0);
+  if(!Mcast_input_address_text || !Mcast_output_address_text){
+    fprintf(stderr,"Must specify -I and -R options\n");
+    exit(1);
+  }
+
+  Input_fd = setup_mcast(Mcast_input_address_text,0,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input on %s: %sn",Mcast_input_address_text,strerror(errno));
     exit(1);
   }
-  Output_fd = setup_mcast(Mcast_output_address_text,1);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
   }
 
   // Set up to receive PCM in RTP/UDP/IP
-  struct rtp_header rtp_in;
 
   
   struct sockaddr sender;
@@ -180,16 +182,17 @@ int main(int argc,char * const argv[]){
     }
     unsigned char *dp = buffer;
     // RTP header to host format
-    dp = ntoh_rtp(&rtp_in,buffer);
+    struct rtp_header rtp_hdr;
+    dp = ntoh_rtp(&rtp_hdr,buffer);
     size -= (dp - buffer);
-    if(rtp_in.pad){
+    if(rtp_hdr.pad){
       // Remove padding
       size -= dp[size-1];
-      rtp_in.pad = 0;
+      rtp_hdr.pad = 0;
     }
 
     int frame_size = 0;
-    switch(rtp_in.type){
+    switch(rtp_hdr.type){
     case PCM_STEREO_PT:
       frame_size = size / (2 * sizeof(short));
       break;
@@ -200,10 +203,10 @@ int main(int argc,char * const argv[]){
       goto endloop; // Discard all but mono and stereo PCM to avoid polluting session table
     }
 
-    struct session *sp = lookup_session(&sender,rtp_in.ssrc);
+    struct session *sp = lookup_session(&sender,rtp_hdr.ssrc);
     if(sp == NULL){
       // Not found
-      if((sp = make_session(&sender,rtp_in.ssrc,rtp_in.seq,rtp_in.timestamp)) == NULL){
+      if((sp = make_session(&sender,rtp_hdr.ssrc,rtp_hdr.seq,rtp_hdr.timestamp)) == NULL){
 	fprintf(stderr,"No room!!\n");
 	goto endloop;
       }
@@ -211,6 +214,7 @@ int main(int argc,char * const argv[]){
 		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
       sp->audio_buffer = malloc(Channels * sizeof(float) * Opus_frame_size);
       sp->audio_index = 0;
+      sp->rtp_state_out.ssrc = rtp_hdr.ssrc;
       int error = 0;
       sp->opus = opus_encoder_create(Samprate,Channels,OPUS_APPLICATION_AUDIO,&error);
       if(error != OPUS_OK || !sp->opus){
@@ -239,17 +243,17 @@ int main(int argc,char * const argv[]){
       if(0 && error != OPUS_OK)
 	fprintf(stderr,"opus_encoder_ctl set framesize %d (%.1lf ms): error %d\n",Opus_frame_size,Opus_blocktime,error);
     }
-    sp->type = rtp_in.type;
-    int samples_skipped = rtp_process(&sp->rtp_state,&rtp_in,frame_size);
+    sp->type = rtp_hdr.type;
+    int samples_skipped = rtp_process(&sp->rtp_state_in,&rtp_hdr,frame_size);
     
-    if(rtp_in.marker || samples_skipped > 4*Opus_frame_size){
+    if(rtp_hdr.marker || samples_skipped > 4*Opus_frame_size){
       // reset encoder state after 4 frames of complete silence or a RTP marker bit
       opus_encoder_ctl(sp->opus,OPUS_RESET_STATE);
       sp->silence = 1;
     }
     int sampcount = 0;
     signed short *samples = (signed short *)dp;
-    switch(rtp_in.type){
+    switch(rtp_hdr.type){
     case PCM_STEREO_PT: // Stereo
       sampcount = size / 4;  // # 32-bit word samples
       for(int i=0; i < sampcount; i++){
@@ -279,7 +283,7 @@ int main(int argc,char * const argv[]){
 struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
   struct session *sp;
   for(sp = Audio; sp != NULL; sp = sp->next){
-    if(sp->ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
+    if(sp->rtp_state_in.ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
       // Found it
       if(sp->prev != NULL){
 	// Not at top of bucket chain; move it there
@@ -305,9 +309,9 @@ struct session *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_
   
   // Initialize entry
   memcpy(&sp->sender,sender,sizeof(struct sockaddr));
-  sp->ssrc = ssrc;
-  sp->eseq = seq;
-  sp->etimestamp = timestamp;
+  sp->rtp_state_in.ssrc = ssrc;
+  sp->rtp_state_in.seq = seq;
+  sp->rtp_state_in.timestamp = timestamp;
 
   // Put at head of bucket chain
   sp->next = Audio;
@@ -354,36 +358,38 @@ int send_samples(struct session *sp,float left,float right){
   if(sp->audio_index >= Opus_frame_size * Channels){
     sp->audio_index = 0;
 
-
     // Set up to transmit Opus RTP/UDP/IP
-    struct rtp_header rtp_out;
-    memset(&rtp_out,0,sizeof(rtp_out));
-    rtp_out.version = RTP_VERS;
-    rtp_out.type = OPUS_PT; // Opus
-    rtp_out.seq = sp->output_seq;
+    struct rtp_header rtp_hdr;
+    memset(&rtp_hdr,0,sizeof(rtp_hdr));
+    rtp_hdr.version = RTP_VERS;
+    rtp_hdr.type = OPUS_PT; // Opus
+    rtp_hdr.ssrc = sp->rtp_state_out.ssrc;
+    rtp_hdr.seq = sp->rtp_state_out.seq;
 
     if(sp->silence){
       // Beginning of talk spurt after silence, set marker bit
-      rtp_out.marker = 1;
+      rtp_hdr.marker = 1;
       sp->silence = 0;
     } else
-      rtp_out.marker = 0;
-    rtp_out.ssrc = sp->ssrc;
-    rtp_out.timestamp = sp->output_timestamp;
-    sp->output_timestamp += Opus_frame_size; // Always increase timestamp
+      rtp_hdr.marker = 0;
+
+    rtp_hdr.timestamp = sp->rtp_state_out.timestamp;
+    sp->rtp_state_out.timestamp += Opus_frame_size; // Always increase timestamp
     
     unsigned char outbuffer[16384]; // fix this to a more reasonable number
     unsigned char *dp = outbuffer;
-    dp = hton_rtp(dp,&rtp_out);
-    size += opus_encode_float(sp->opus,sp->audio_buffer,Opus_frame_size,dp,sizeof(outbuffer) - (dp - outbuffer));
+    dp = hton_rtp(dp,&rtp_hdr);
+    size = opus_encode_float(sp->opus,sp->audio_buffer,Opus_frame_size,dp,sizeof(outbuffer) - (dp - outbuffer));
     dp += size;
     if(!Discontinuous || size > 2){
       // ship it
-      size = send(Output_fd,outbuffer,dp-outbuffer,0);
-      sp->output_seq++; // Increment only if packet is sent
+      if(send(Output_fd,outbuffer,dp-outbuffer,0) < 0)
+	return -1;
+      sp->rtp_state_out.seq++; // Increment only if packet is sent
+      sp->rtp_state_out.bytes += size;
+      sp->rtp_state_out.packets++;
     } else
       sp->silence = 1;
-
   }
   return size;
 }

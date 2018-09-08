@@ -1,4 +1,4 @@
-// $Id: aprsfeed.c,v 1.8 2018/07/31 11:25:32 karn Exp $
+// $Id: aprsfeed.c,v 1.20 2018/09/08 08:59:13 karn Exp $
 // Process AX.25 frames containing APRS data, feed to APRS2 network
 // Copyright 2018, Phil Karn, KA9Q
 
@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "multicast.h"
 #include "ax25.h"
@@ -24,24 +25,38 @@ char *Host = "noam.aprs2.net";
 char *Port = "14580";
 char *User;
 char *Passcode;
-
+char *Logfilename;
+FILE *Logfile;
 int Verbose;
+int Mcast_ttl = 0;
+
 int Input_fd = -1;
 int Network_fd = -1;
 
 void *netreader(void *arg);
 
 int main(int argc,char *argv[]){
+  // Quickly drop root if we have it
+  // The sooner we do this, the fewer options there are for abuse
+  if(seteuid(getuid()) != 0)
+    fprintf(stderr,"seteuid: %s\n",strerror(errno));
+  
   setlocale(LC_ALL,getenv("LANG"));
+  setlinebuf(stdout);
 
   int c;
-  while((c = getopt(argc,argv,"u:p:I:vh:")) != EOF){
+  while((c = getopt(argc,argv,"u:p:I:vh:f:")) != EOF){
     switch(c){
+    case 'f':
+      Logfilename = optarg;
+      Verbose = 0;
+      break;
     case 'u':
       User = optarg;
       break;
     case 'v':
-      Verbose++;
+      if(!Logfilename)
+	Verbose++;
       break;
     case 'h':
       Host = optarg;
@@ -53,16 +68,49 @@ int main(int argc,char *argv[]){
       Mcast_address_text = optarg;
       break;
     default:
-      fprintf(stderr,"Usage: %s -u user -p passcode [-v] [-I mcast_address][-h host]\n",argv[0]);
-      fprintf(stderr,"Defaults: %s -I %s -h %s\n",argv[0],Mcast_address_text,Host);
+      fprintf(stderr,"Usage: %s -u user [-p passcode] [-v] [-I mcast_address][-h host]\n",argv[0]);
       exit(1);
     }
   }
-  if(Verbose)
-    fprintf(stderr,"APRS feeder program by KA9Q\n");
-  if(User == NULL || Passcode == NULL){
-    fprintf(stderr,"Must specify -u User -p passcode\n");
+  // Set up multicast input
+  if((Input_fd = setup_mcast(Mcast_address_text,0,Mcast_ttl,0)) == -1){
+    fprintf(stderr,"Can't set up multicast input from %s\n",Mcast_address_text);
     exit(1);
+  }
+
+  if(Logfilename)
+    Logfile = fopen(Logfilename,"a");
+  else if(Verbose)
+    Logfile = stdout;
+
+  if(Logfile){
+    setlinebuf(Logfile);
+    fprintf(Logfile,"APRS feeder program by KA9Q\n");
+  }
+  if(User == NULL){
+    fprintf(stderr,"Must specify -u User\n");
+    exit(1);
+  }
+  if(!Passcode){
+    // Calculate trivial hash authenticator
+    int hash = 0x73e2;
+    char callsign[11];
+    strncpy(callsign,User,sizeof(callsign)-1);
+    char *cp;
+    if((cp = strchr(callsign,'-')) != NULL)
+      *cp = '\0';
+    
+    int len = strlen(callsign);
+
+    for(int i=0; i<len; i += 2){
+      hash ^= toupper(callsign[i]) << 8;
+      hash ^= toupper(callsign[i+1]);
+    }
+    hash &= 0x7fff;
+    if(asprintf(&Passcode,"%d",hash) < 0){
+      fprintf(stderr,"Unexpected error in computing passcode\n");
+      exit(1);
+    }
   }
 
   {
@@ -73,15 +121,21 @@ int main(int argc,char *argv[]){
   hints.ai_protocol = IPPROTO_TCP;
   hints.ai_flags = AI_CANONNAME|AI_ADDRCONFIG;
 
-  if(Verbose)
-    fprintf(stderr,"APRS server: %s:%s\n",Host,Port);
   struct addrinfo *results = NULL;
   int ecode;
-  if((ecode = getaddrinfo(Host,Port,&hints,&results)) != 0){
+  // Try a few times in case we come up before the resolver is quite ready
+  for(int tries=0; tries < 10; tries++){
+    if((ecode = getaddrinfo(Host,Port,&hints,&results)) == 0)
+      break;
+    usleep(500000);
+  } 
+  if(ecode != 0){
     fprintf(stderr,"Can't getaddrinfo(%s,%s): %s\n",Host,Port,gai_strerror(ecode));
     exit(1);
   }
   struct addrinfo *resp;
+
+		    
   for(resp = results; resp != NULL; resp = resp->ai_next){
     if((Network_fd = socket(resp->ai_family,resp->ai_socktype,resp->ai_protocol)) < 0)
       continue;
@@ -93,35 +147,23 @@ int main(int argc,char *argv[]){
     fprintf(stderr,"Can't connect to server %s:%s\n",Host,Port);
     exit(1);
   }
-  if(Verbose)
-    fprintf(stderr,"Connected to server %s port %s\n",
-	    resp->ai_canonname,Port);
   freeaddrinfo(results);
+  if(Logfile)
+    fprintf(Logfile,"Connected to APRS server %s port %s\n",resp->ai_canonname,Port);
+
   }
-  
+
+
+  FILE *network = fdopen(Network_fd,"w+");
+  setlinebuf(network);
+
   pthread_t read_thread;
-  if(Verbose)
-    pthread_create(&read_thread,NULL,netreader,NULL);
+  pthread_create(&read_thread,NULL,netreader,NULL);
 
   // Log into the network
-  {
-  char *message;
-  int mlen;
-  mlen = asprintf(&message,"user %s pass %s vers KA9Q-aprs 1.0\r\n",User,Passcode);
-  if(write(Network_fd,message,mlen) != mlen){
-    perror("Login write to network failed");
-    exit(1);
-  }
-  free(message);
-  }
+  fprintf(network,"user %s pass %s vers KA9Q-aprs 1.0\r\n",User,Passcode);
+  // Check for error return here
   
-  // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0);
-  if(Input_fd == -1){
-    fprintf(stderr,"Can't set up input from %s\n",
-	    Mcast_address_text);
-    exit(1);
-  }
   unsigned char packet[2048];
   int pktlen;
 
@@ -136,21 +178,20 @@ int main(int argc,char *argv[]){
       continue; // Wrong type
 
     // Emit local timestamp
-    if(Verbose){
-      time_t t;
-      struct tm *tmp;
-      time(&t);
-      tmp = gmtime(&t);
-      fprintf(stderr,"%d %s %04d %02d:%02d:%02d UTC",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
-	      tmp->tm_hour,tmp->tm_min,tmp->tm_sec);
-      fprintf(stderr," ssrc %x seq %d",rtp_header.ssrc,rtp_header.seq);
+    time_t t;
+    struct tm *tmp;
+    time(&t);
+    tmp = gmtime(&t);
+    if(Logfile){
+      fprintf(Logfile,"%d %s %04d %02d:%02d:%02d UTC ssrc %x seq %d",tmp->tm_mday,Months[tmp->tm_mon],tmp->tm_year+1900,
+	      tmp->tm_hour,tmp->tm_min,tmp->tm_sec,rtp_header.ssrc,rtp_header.seq);
     }
 
     // Parse incoming AX.25 frame
     struct ax25_frame frame;
     if(ax25_parse(&frame,dp,pktlen) < 0){
-      if(Verbose)
-	fprintf(stderr," Unparsable packet\n");
+      if(Logfile)
+	fprintf(Logfile," Unparsable packet\n");
       continue;
     }
 		
@@ -197,42 +238,32 @@ int main(int argc,char *argv[]){
       sspace--;
     }      
     assert(sizeof(monstring) - sspace - 1 == strlen(monstring));
-    if(Verbose)
-      fprintf(stderr," %s\n",monstring);
+    if(Logfile)
+      fprintf(Logfile," %s\n",monstring);
+
     if(frame.control != 0x03 || frame.type != 0xf0){
-      if(Verbose)
-	fprintf(stderr," Not relaying: invalid ax25 ctl/protocol\n");
+      if(Logfile)
+	fprintf(Logfile," Not relaying: invalid ax25 ctl/protocol\n");
       continue;
     }
     if(infolen == 0){
-      if(Verbose)
-	fprintf(stderr," Not relaying: empty I field\n");
+      if(Logfile)
+	fprintf(Logfile," Not relaying: empty I field\n");
       continue;
     }
     if(is_tcpip){
-      if(Verbose)
-	fprintf(stderr," Not relaying: Internet relayed packet\n");
+      if(Logfile)
+	fprintf(Logfile," Not relaying: Internet relayed packet\n");
       continue;
     }
     if(frame.information[0] == '{'){
-      if(Verbose)
-	fprintf(stderr," Not relaying: third party traffic\n");	
+      if(Logfile)
+	fprintf(Logfile," Not relaying: third party traffic\n");	
       continue;
     }
 
     // Send to APRS network with appended crlf
-    {
-      assert(sspace >= 2);
-      int len = strlen(monstring);
-      char *cp = monstring + len;
-      *cp++ = '\r';
-      *cp++ = '\n';
-      len += 2;
-      if(write(Network_fd,monstring,len) != len){
-	perror(" network report write");
-	break;
-      }
-    }
+    fprintf(network,"%s\r\n",monstring);
   }
 }
 
@@ -240,15 +271,16 @@ int main(int argc,char *argv[]){
 void *netreader(void *arg){
   pthread_setname("aprs-read");
 
-  while(1){
-    char c;
-    int r = read(Network_fd,&c,1);
-    if(r < 0)
-      break;
-    if(write(1,&c,1) != 1){
-      perror("server echo write");
-      break;
-    }
+  char *line = NULL;
+  size_t linecap = 0;
+  ssize_t linelen;
+  // Create our own stream; there seem to be problems sharing a common stream among threads
+  FILE *network = fdopen(Network_fd,"r");
+
+  while((linelen = getline(&line,&linecap,network)) > 0){
+    if(Logfile)
+      fwrite(line,linelen,1,Logfile);
   }
+  free(line); line = NULL;
   return NULL;
 }

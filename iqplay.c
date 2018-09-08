@@ -1,4 +1,4 @@
-// $Id: iqplay.c,v 1.26 2018/07/06 06:06:12 karn Exp $
+// $Id: iqplay.c,v 1.29 2018/09/08 06:06:21 karn Exp $
 // Read from IQ recording, multicast in (hopefully) real time
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1 // allow bind/connect/recvfrom without casting sockaddr_in6
@@ -24,6 +24,7 @@
 
 
 int Verbose;
+int Mcast_ttl = 1; // Don't send fast IQ streams beyond the local network by default
 double Default_frequency = 0;
 long Default_samprate = 192000;
 int Blocksize = 256;
@@ -109,6 +110,7 @@ int playfile(int sock,int fd,int blocksize){
 
 
 int main(int argc,char *argv[]){
+#if 0 // Better done manually?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -117,11 +119,12 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   char *dest = "iq.playback.mcast.local"; // Default for testing
   char *locale = getenv("LANG");
 
-  Mcast_ttl = 1; // By default, don't let it route
+
   int c;
   while((c = getopt(argc,argv,"vl:b:R:f:r:T:")) != EOF){
     switch(c){
@@ -155,7 +158,7 @@ int main(int argc,char *argv[]){
 
   setlocale(LC_ALL,locale);
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1);
+  Rtp_sock = setup_mcast(dest,1,Mcast_ttl,0);
 
   signal(SIGPIPE,SIG_IGN);
 

@@ -1,9 +1,11 @@
-// $Id: ax25.h,v 1.4 2018/07/06 06:10:04 karn Exp $
+// $Id: ax25.h,v 1.5 2018/08/06 06:29:26 karn Exp $
 // Functions defined in ax25.c
 // Copyright 2018, Phil Karn, KA9Q
 
 #ifndef _AX25_H
 #define _AX25_H 1
+
+#include <stdio.h>
 
 // AX.25 frame, broken down
 #define MAX_DIGI 10
@@ -28,7 +30,7 @@ struct ax25_frame {
 
 
 int ax25_parse(struct ax25_frame *out,unsigned char *in,int len);
-int dump_frame(unsigned char *frame,int bytes);
+int dump_frame(FILE *stream,unsigned char *frame,int bytes);
 int crc_good(unsigned char *frame,int length);
 char *get_callsign(char *result,unsigned char *in);
 int decode_base91(char *in);

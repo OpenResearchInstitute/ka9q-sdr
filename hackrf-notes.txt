@@ -1,0 +1,17 @@
+HackRF notes
+
+Si5351C (U19) clock generator usage
+
+channel 0 GCK1 - MAX5864 A/D sampling clock 12.288 MHz
+channel 1 GCK2 p28 pin 13 (unused?)
+channel 2  (unused?) SGPIO clock
+channel 3 10 MHz - clock output connector
+channel 4 50 MHz MIX_CLK
+channel 5 40 MHz - MAX2837 transceiver
+channel 6 3.1372549534 MHz
+channel 7 40 MHz - MCU Clock
+
+
+IF frequency must be between 2,150 MHz and 2,750 MHz inclusive
+
+If filter is not bypassed, LO must be between 84.375000 MHz and  5400.000000 MHz inclusive

@@ -1,4 +1,4 @@
-// $Id: hackrf.c,v 1.8 2018/07/11 07:00:22 karn Exp $
+// $Id: hackrf.c,v 1.13 2018/09/08 06:06:21 karn Exp $
 // Read from HackRF
 // Multicast raw 8-bit I/Q samples
 // Accept control commands from UDP socket
@@ -9,6 +9,7 @@
 #include <complex.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -20,34 +21,15 @@
 #include <libhackrf/hackrf.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <errno.h>
+#include <syslog.h>
+#include <sys/stat.h>
 
 #include "sdr.h"
 #include "radio.h"
 #include "misc.h"
 #include "multicast.h"
 #include "decimate.h"
-
-
-// Configurable parameters
-// decibel limits for power
-float Upper_limit = -15;
-float Lower_limit = -25;
-
-int ADC_samprate; // Computed from Out_samprate * Decimate
-int Out_samprate = 192000;
-int Decimate = 64;
-int Log_decimate = 6; // Computed from Decimate
-float Filter_atten = 1;
-int Blocksize = 350;
-int Device = 0;      // Which of several to use
-int Verbose;
-int Offset=1;     // Default to offset high by +Fs/4 downconvert in software to avoid DC
-
-float const DC_alpha = 1.0e-7;  // high pass filter coefficient for DC offset estimates, per sample
-float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
-int const stage_threshold = 8; // point at which to switch to filter f8
-#define BUFFERSIZE  (1<<19) // Upcalls seem to be 256KB; don't make too big or we may blow out of the cache
-const float SCALE8 = 1./127.;   // Scale 8-bit samples to unity range floats
 
 
 struct sdrstate {
@@ -65,25 +47,47 @@ struct sdrstate {
   float imbalance;       // Ratio of I power to Q power
 };
 
+
+// Configurable parameters
+// decibel limits for power
+float Upper_limit = -15;
+float Lower_limit = -25;
+
+int ADC_samprate; // Computed from Out_samprate * Decimate
+int Out_samprate = 192000;
+int Decimate = 64;
+int Log_decimate = 6; // Computed from Decimate
+float Filter_atten = 1;
+int Blocksize = 350;
+int Device = 0;      // Which of several to use
+int Offset=1;     // Default to offset high by +Fs/4 downconvert in software to avoid DC
+int Daemonize = 0;
+int Mcast_ttl = 1; // Don't send fast IQ streams beyond the local network by default
+char *Rundir = "/run/hackrf"; // Where 'status' and 'pid' get written
+
+float const DC_alpha = 1.0e-7;  // high pass filter coefficient for DC offset estimates, per sample
+float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
+int const stage_threshold = 8; // point at which to switch to filter f8
+#define BUFFERSIZE  (1<<19) // Upcalls seem to be 256KB; don't make too big or we may blow out of the cache
+const float SCALE8 = 1./127.;   // Scale 8-bit samples to unity range floats
+
+
 struct sdrstate HackCD;
 char *Locale;
-
 pthread_t Display_thread;
 pthread_t Process_thread;
 pthread_t AGC_thread;
-
-
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
 int Ctl_sock;
-extern int Mcast_ttl;
-long Ssrc;
-int Seq = 0;
-int Timestamp = 0;
+
+struct rtp_state Rtp;
 
 complex float Sampbuffer[BUFFERSIZE];
 int Samp_wp;
 int Samp_rp;
-
+FILE *Status;
+char *Status_filename;
+char *Pid_filename;
 
 pthread_mutex_t Buf_mutex;
 pthread_cond_t Buf_cond;
@@ -92,6 +96,21 @@ void *display(void *arg);
 void *agc(void *arg);
 double  rffc5071_freq(uint16_t lo);
 uint32_t max2837_freq(uint32_t freq);
+
+
+void errmsg(const char *fmt,...){
+  va_list ap;
+
+  va_start(ap,fmt);
+
+  if(Daemonize){
+    vsyslog(LOG_INFO,fmt,ap);
+  } else {
+    vfprintf(stderr,fmt,ap);
+    fflush(stderr);
+  }
+  va_end(ap);
+}
 
 
 // Gain and phase corrections. These will be updated every block
@@ -179,7 +198,7 @@ void *process(void *arg){
   memset(&rtp,0,sizeof(rtp));
   rtp.version = RTP_VERS;
   rtp.type = IQ_PT;
-  rtp.ssrc = Ssrc;
+  rtp.ssrc = Rtp.ssrc;
   int rotate_phase = 0;
 
   // Decimation filter states
@@ -214,8 +233,8 @@ void *process(void *arg){
   float time_p_packet = (float)Blocksize / Out_samprate;
   while(1){
 
-    rtp.timestamp = Timestamp;
-    rtp.seq = Seq++;
+    rtp.timestamp = Rtp.timestamp;
+    rtp.seq = Rtp.seq++;
 
     unsigned char *dp = buffer;
     dp = hton_rtp(dp,&rtp);
@@ -305,22 +324,24 @@ void *process(void *arg){
     HackCD.out_power = 0.5 * output_energy / Blocksize;
     dp = (unsigned char *)up;
     if(send(Rtp_sock,buffer,dp - buffer,0) == -1){
-      perror("send");
+      errmsg("send: %s",strerror(errno));
       // If we're sending to a unicast address without a listener, we'll get ECONNREFUSED
       // Sleep 1 sec to slow down the rate of these messages
       usleep(1000000);
-    }
-    Timestamp += Blocksize; // samples
-  
+    } else {
+      Rtp.packets++;
+      Rtp.bytes += Blocksize;
+    }  
     // Simply increment by number of samples
     // But what if we lose some? Then the clock will always be off
+    Rtp.timestamp += Blocksize; // samples
     HackCD.status.timestamp += 1.e9 * time_p_packet;
-
   }
 }
 
 
 int main(int argc,char *argv[]){
+#if 0 // Better handled in systemd?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -328,7 +349,8 @@ int main(int argc,char *argv[]){
   // Quickly drop root if we have it
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
-    perror("seteuid");
+    errmsg("seteuid: %s",strerror(errno));
+#endif
 
   char *dest = "239.1.6.1"; // Default for testing
 
@@ -337,8 +359,12 @@ int main(int argc,char *argv[]){
     Locale = "en_US.UTF-8";
 
   int c;
-  while((c = getopt(argc,argv,"D:d:vp:l:b:R:T:o:r:")) != EOF){
+  while((c = getopt(argc,argv,"D:I:dvl:b:R:T:o:r:S:")) != -1){
     switch(c){
+    case 'd':
+      Daemonize++;
+      Status = NULL;
+      break;
     case 'o':
       Offset = strtol(optarg,NULL,0);
       break;
@@ -348,14 +374,15 @@ int main(int argc,char *argv[]){
     case 'R':
       dest = optarg;
       break;
-    case 'd':
+    case 'D':
       Decimate = strtol(optarg,NULL,0);
       break;
-    case 'D':
+    case 'I':
       Device = strtol(optarg,NULL,0);
       break;
     case 'v':
-      Verbose++;
+      if(!Daemonize)
+	Status = stderr;
       break;
     case 'l':
       Locale = optarg;
@@ -366,12 +393,74 @@ int main(int argc,char *argv[]){
     case 'T':
       Mcast_ttl = strtol(optarg,NULL,0);
       break;
+    case 'S':
+      Rtp.ssrc = strtol(optarg,NULL,0);
+      break;
+    default:
+    case '?':
+      fprintf(stderr,"Unknown argument %c\n",c);
+      break;
     }
   }
+  if(Daemonize){
+    // I know this is deprecated, replace it someday with posix_spawn()
+    if(daemon(0,0) != 0)
+      exit(1);
+
+    openlog("hackrf",LOG_PID,LOG_DAEMON);
+
+#if 0 // Now handled by systemd
+    mkdir(Rundir,0775); // Ensure it exists, let everybody read it
+#endif
+    
+    // see if one is already running
+    int r = asprintf(&Pid_filename,"%s%d/pid",Rundir,Device);
+    if(r == -1){
+      // Unlikely, but it makes the compiler happy
+      errmsg("asprintf error");
+      exit(1);
+    }
+    FILE *pidfile = fopen(Pid_filename,"r");
+    if(pidfile){
+      // pid file exists; read it and see if process exists
+      int pid = 0;
+      if(fscanf(pidfile,"%d",&pid) == 1 && (kill(pid,0) == 0 || errno != ESRCH)){
+	// Already running; exit
+	fclose(pidfile);
+	errmsg("pid %d: daemon %d already running, quitting",getpid(),pid);
+	exit(1);
+      }
+      fclose(pidfile); pidfile = NULL;
+    }
+    unlink(Pid_filename); // Remove any orphan
+    pidfile = fopen(Pid_filename,"w");
+    if(pidfile){
+      int pid = getpid();
+      fprintf(pidfile,"%d\n",pid);
+      fclose(pidfile);
+    }
+    r = asprintf(&Status_filename,"%s%d/status",Rundir,Device);
+    if(r == -1){
+      // Unlikely, but it makes the compiler happy
+      errmsg("asprintf error");
+      exit(1);
+    }
+
+    unlink(Status_filename); // Remove any orphaned version
+    Status = fopen(Status_filename,"w");
+    if(Status == NULL){
+      errmsg("Can't write %s: %s\n",Status_filename,strerror(errno));
+    } else {
+      setlinebuf(Status);
+    }
+  } else {
+    Status = stderr; // Write status to stderr when running in foreground
+  }
+  
   ADC_samprate = Decimate * Out_samprate;
   Log_decimate = (int)round(log2(Decimate));
   if(1<<Log_decimate != Decimate){
-    fprintf(stderr,"Decimation ratios must currently be a power of 2\n");
+    errmsg("Decimation ratios must currently be a power of 2\n");
     exit(1);
   }
   Filter_atten = powf(.5, Log_decimate); // Compensate for +6dB gain in each decimation stage
@@ -379,9 +468,9 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,Locale);
   
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1);
+  Rtp_sock = setup_mcast(dest,1,Mcast_ttl,0);
   if(Rtp_sock == -1){
-    perror("Can't create multicast socket");
+    errmsg("Can't create multicast socket: %s",strerror(errno));
     exit(1);
   }
     
@@ -392,7 +481,7 @@ int main(int argc,char *argv[]){
   struct sockaddr_in ctl_sockaddr;
   socklen_t siz = sizeof(ctl_sockaddr);
   if(getsockname(Rtp_sock,(struct sockaddr *)&ctl_sockaddr,&siz) == -1){
-    perror("getsockname on ctl port");
+    errmsg("getsockname on ctl port: %s",strerror(errno));
     exit(1);
   }
   struct sockaddr_in locsock;
@@ -403,14 +492,14 @@ int main(int argc,char *argv[]){
 
   int ret;
   if((ret = hackrf_init()) != HACKRF_SUCCESS){
-    fprintf(stderr,"hackrf_init() failed: %s\n",hackrf_error_name(ret));
+    errmsg("hackrf_init() failed: %s\n",hackrf_error_name(ret));
     exit(1);
   }
   // Enumerate devices
   hackrf_device_list_t *dlist = hackrf_device_list();
 
   if((ret = hackrf_device_list_open(dlist,Device,&HackCD.device)) != HACKRF_SUCCESS){
-    fprintf(stderr,"hackrf_open(%d) failed: %s\n",Device,hackrf_error_name(ret));
+    errmsg("hackrf_open(%d) failed: %s\n",Device,hackrf_error_name(ret));
     exit(1);
   }
   hackrf_device_list_free(dlist); dlist = NULL;
@@ -454,12 +543,12 @@ int main(int argc,char *argv[]){
   // Timestamp is in nanoseconds for futureproofing, but time of day is only available in microsec
   HackCD.status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
 
-  Ssrc = tt & 0xffffffff; // low 32 bits of clock time
-  if(Verbose){
-    fprintf(stderr,"hackrf device %d; blocksize %d; RTP SSRC %lx\n",Device,Blocksize,Ssrc);
-    fprintf(stderr,"A/D sample rate %'d Hz; decimation ratio %d; output sample rate %'d Hz; Offset %'+d\n",
-	    ADC_samprate,Decimate,Out_samprate,Offset * ADC_samprate/4);
-  }
+  if(Rtp.ssrc == 0)
+    Rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Rtp.ssrc,Status_filename);
+  errmsg("A/D sample rate %'d Hz; decimation ratio %d; output sample rate %'d Hz; Offset %'+d\n",
+	 ADC_samprate,Decimate,Out_samprate,Offset * ADC_samprate/4);
+
   pthread_create(&Process_thread,NULL,process,NULL);
 
   ret = hackrf_start_rx(HackCD.device,rx_callback,&HackCD);
@@ -467,15 +556,15 @@ int main(int argc,char *argv[]){
 
   pthread_create(&AGC_thread,NULL,agc,NULL);
 
-  if(Verbose > 1){
-    signal(SIGPIPE,SIG_IGN);
-    signal(SIGINT,closedown);
-    signal(SIGKILL,closedown);
-    signal(SIGQUIT,closedown);
-    signal(SIGTERM,closedown);        
-
+  signal(SIGPIPE,SIG_IGN);
+  signal(SIGINT,closedown);
+  signal(SIGKILL,closedown);
+  signal(SIGQUIT,closedown);
+  signal(SIGTERM,closedown);        
+  
+  if(Status)
     pthread_create(&Display_thread,NULL,display,NULL);
-  }
+
 
   // Process commands to change hackrf state
   // We listen on the same IP address and port we use as a multicasting source
@@ -496,7 +585,7 @@ int main(int argc,char *argv[]){
     timeout.tv_usec = 0;
     ret = select(Ctl_sock+1,&fdset,NULL,NULL,&timeout);
     if(ret == -1){
-      perror("select");
+      errmsg("select");
       usleep(50000); // don't loop tightly
       continue;
     }
@@ -509,7 +598,7 @@ int main(int argc,char *argv[]){
     addrlen = sizeof(command_address);
     if((ret = recvfrom(Ctl_sock,&requested_status,sizeof(requested_status),0,(struct sockaddr *)&command_address,&addrlen)) <= 0){
       if(ret < 0)
-	perror("recv");
+	errmsg("recv");
       usleep(50000); // don't loop tightly
       continue;
     }
@@ -536,14 +625,21 @@ int main(int argc,char *argv[]){
 void *display(void *arg){
   pthread_setname("hackrf-disp");
 
-  fprintf(stderr,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|          clips\n");
-  fprintf(stderr,"Frequency      LNA  mixer bband          RF   A/D   Out     DC-I   DC-Q  phase  gain\n");
-  fprintf(stderr,"Hz                                           dBFS  dBFS                    deg    dB\n");   
+  fprintf(Status,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|           clips\n");
+  fprintf(Status,"Frequency      LNA  mixer bband          RF   A/D   Out     DC-I   DC-Q  phase  gain\n");
+  fprintf(Status,"Hz                                           dBFS  dBFS                    deg    dB\n");   
 
+  off_t stat_point = ftello(Status);
+  // End lines with return when writing to terminal, newlines when writing to status file
+  char   eol = stat_point == -1 ? '\r' : '\n';
   while(1){
+
     float powerdB = 10*log10f(HackCD.in_power);
 
-    fprintf(stderr,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    \r",
+    if(stat_point != -1)
+      fseeko(Status,stat_point,SEEK_SET);
+    
+    fprintf(Status,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    %c",
 	    HackCD.status.frequency,
 	    HackCD.status.lna_gain,	    
 	    HackCD.status.mixer_gain,
@@ -555,10 +651,9 @@ void *display(void *arg){
 	    cimagf(HackCD.DC),
 	    (180/M_PI) * asin(HackCD.sinphi),
 	    10*log10(HackCD.imbalance),
-	    HackCD.clips);
-    
-
-
+	    HackCD.clips,
+	    eol);
+    fflush(Status);
     usleep(100000); // 10 Hz
   }
   return NULL;
@@ -632,9 +727,9 @@ void *agc(void *arg){
 }
 
 void closedown(int a){
-  if(Verbose)
-    fprintf(stderr,"\nhackrf: caught signal %d: %s\n",a,strsignal(a));
-
+  errmsg("caught signal %d: %s\n",a,strsignal(a));
+  if(a == SIGTERM) // sent by systemd when shutting down. Return success
+    exit(0);
   exit(1);
 }
 

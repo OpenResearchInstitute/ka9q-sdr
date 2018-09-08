@@ -1,4 +1,4 @@
-// $Id: pcmsend.c,v 1.6 2018/07/06 06:13:07 karn Exp $
+// $Id: pcmsend.c,v 1.9 2018/09/08 06:06:21 karn Exp $
 // Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -20,24 +20,26 @@
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-char *Audiodev = "";
-char *Mcast_output_address_text = "audio-opus-mcast.local";     // Multicast address we're sending to
-
+// Global config constants
 #define BUFFERSIZE (1<<18)    // Size of audio ring buffer in mono samples. 2^18 is 2.73 sec at 48 kHz stereo
                               // Defined as macro so the Audiodata[] declaration below won't bother some compilers
 int const Samprate = 48000;   // Too hard to handle other sample rates right now
-int Verbose;                  // Verbosity flag (currently unused)
-
 int const Channels = 2;
 #define FRAMESIZE 240         // 5 ms @ 48 kHz makes 960 bytes/packet
 // End of config stuff
 
+
+// Command line params
+char *Audiodev = "";
+char *Mcast_output_address_text = "";     // Multicast address we're sending to
+int Verbose;                  // Verbosity flag (currently unused)
+int Mcast_ttl = 1;
+
+// Global vars
 int Output_fd = -1;
 float Audiodata[BUFFERSIZE];
 int Samples_available;
 int Wptr;   // Write pointer for callback
-
 
 static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       unsigned long framesPerBuffer,
@@ -45,22 +47,8 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       PaStreamCallbackFlags statusFlags,
 		       void *userData);
 
-
-void cleanup(void){
-  Pa_Terminate();
-  
-  if(Output_fd != -1)
-    close(Output_fd);
-  Output_fd = -1;
-}
-
-
-void closedown(int s){
-  fprintf(stderr,"signal %d\n",s);
-  exit(0);
-}
-
-
+void cleanup(void);
+void closedown(int);
 
 // Convert unsigned number modulo buffersize to a signed 2's complement
 static inline int signmod(unsigned int const a){
@@ -83,6 +71,7 @@ static short const scaleclip(float const x){
 
 
 int main(int argc,char * const argv[]){
+#if 0 // Better done manually or in systemd?
   // Try to improve our priority
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 15);
@@ -90,12 +79,12 @@ int main(int argc,char * const argv[]){
   // Drop root if we have it
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   setlocale(LC_ALL,getenv("LANG"));
 
   int c;
   int List_audio = 0;
-  Mcast_ttl = 1; // By default, don't let it be routed
   while((c = getopt(argc,argv,"LT:vI:R:")) != EOF){
     switch(c){
     case 'L':
@@ -194,19 +183,19 @@ int main(int argc,char * const argv[]){
 
 
   // Set up multicast transmit socket
-  Output_fd = setup_mcast(Mcast_output_address_text,1);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
   }
   // Set up to transmit RTP/UDP/IP
 
+  struct rtp_state rtp_state_out;
+  memset(&rtp_state_out,0,sizeof(rtp_state_out));
 
-  unsigned long timestamp = 0;
-  unsigned short seq = 0;
   struct timeval tp;
   gettimeofday(&tp,NULL);
-  unsigned long ssrc = tp.tv_sec;
+  rtp_state_out.ssrc = tp.tv_sec;
 
   // Graceful signal catch
   signal(SIGPIPE,closedown);
@@ -232,27 +221,28 @@ int main(int argc,char * const argv[]){
 	delay /= 2; // Minimum sleep time 0.2 ms
       usleep(delay);
     }
-    struct rtp_header rtp_out;
-    memset(&rtp_out,0,sizeof(rtp_out));
-    rtp_out.version = RTP_VERS;
-    rtp_out.type = PCM_STEREO_PT;
-    rtp_out.seq = seq;
-    rtp_out.ssrc = ssrc;
-    rtp_out.timestamp = timestamp;
+    struct rtp_header rtp_hdr;
+    memset(&rtp_hdr,0,sizeof(rtp_hdr));
+    rtp_hdr.version = RTP_VERS;
+    rtp_hdr.type = PCM_STEREO_PT;
+    rtp_hdr.seq = rtp_state_out.seq;
+    rtp_hdr.ssrc = rtp_state_out.ssrc;
+    rtp_hdr.timestamp = rtp_state_out.timestamp;
 
     unsigned char buffer[16384]; // Pick better number
     unsigned char *dp = buffer;
-    dp = hton_rtp(dp,&rtp_out);
+    dp = hton_rtp(dp,&rtp_hdr);
     signed short *samples = (signed short *)dp;
     for(int i=0; i < Channels * FRAMESIZE; i++){
       *samples++ = htons(scaleclip(Audiodata[rptr++]));
       rptr &= (BUFFERSIZE-1);
     }
     dp += Channels * FRAMESIZE * sizeof(*samples);
-    send(Output_fd,buffer,dp - buffer,0);
-    seq++;
-
-    timestamp += FRAMESIZE;
+    send(Output_fd,buffer,dp - buffer,0); // should probably check return code
+    rtp_state_out.packets++;
+    rtp_state_out.bytes += Channels * FRAMESIZE * sizeof(signed short);
+    rtp_state_out.seq++;
+    rtp_state_out.timestamp += FRAMESIZE;
   }
   close(Output_fd);
   exit(0);
@@ -278,3 +268,18 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
   }
   return paContinue;
 }
+void cleanup(void){
+  Pa_Terminate();
+  
+  if(Output_fd != -1)
+    close(Output_fd);
+  Output_fd = -1;
+}
+
+
+void closedown(int s){
+  fprintf(stderr,"signal %d\n",s);
+  exit(0);
+}
+
+

@@ -1,4 +1,4 @@
-// $Id: modulate.c,v 1.12 2018/07/06 06:06:12 karn Exp $
+// $Id: modulate.c,v 1.13 2018/08/29 01:34:15 karn Exp $
 // Simple I/Q AM modulator - will eventually support other modes
 // Copyright 2017, Phil Karn, KA9Q
 #include <assert.h>
@@ -28,6 +28,7 @@ int Samprate = 192000;
 int Verbose = 0;
 
 int main(int argc,char *argv[]){
+#if 0 // Better done manually?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -36,6 +37,7 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
 
   // Set defaults
   double frequency = 48000;

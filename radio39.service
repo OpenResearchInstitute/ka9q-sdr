@@ -1,0 +1,16 @@
+# $Id: radio39.service,v 1.2 2018/08/29 09:24:54 karn Exp $
+# systemd unit for FM radio receiver on 144.39 MHz (North American APRS channel)
+# Phil Karn, KA9Q, Aug 2018
+
+[Unit]
+Description=144.39 MHz FM radio
+Requires=multi-user.target
+
+[Service]
+Nice=-10
+Type=simple
+ExecStart=/usr/local/bin/radio -q -m fm -f 144m39 -I iq.vhf.mcast.local -R pcm.vhf.mcast.local
+DynamicUser=true
+
+[Install]
+WantedBy=multi-user.target

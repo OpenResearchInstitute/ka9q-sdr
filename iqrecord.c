@@ -1,4 +1,4 @@
-// $Id: iqrecord.c,v 1.18 2018/07/06 06:06:12 karn Exp $
+// $Id: iqrecord.c,v 1.21 2018/09/08 06:06:21 karn Exp $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
 // Copyright 2018 Phil Karn, KA9Q
@@ -59,7 +59,10 @@ struct session {
 };
 
 int Quiet;
+int Mcast_ttl = 0; // We don't transmit
+double Duration = INFINITY;
 char IQ_mcast_address_text[256];
+
 struct sockaddr Sender;
 struct sockaddr Input_mcast_sockaddr;
 int Input_fd;
@@ -68,23 +71,10 @@ struct session *Sessions;
 
 void closedown(int a);
 void input_loop(void);
-
-void cleanup(void){
-  while(Sessions){
-    // Flush and close each write stream
-    // Be anal-retentive about freeing and clearing stuff even though we're about to exit
-    struct session *next_s = Sessions->next;
-    fflush(Sessions->fp);
-    fclose(Sessions->fp);
-    Sessions->fp = NULL;
-    free(Sessions->iobuffer);
-    Sessions->iobuffer = NULL;
-    free(Sessions);
-    Sessions = next_s;
-  }
-}
+void cleanup(void);
 
 int main(int argc,char *argv[]){
+#if 0 // Better done manually or in systemd?
   // if we have root, up our priority and drop privileges
   int prio = getpriority(PRIO_PROCESS,0);
   prio = setpriority(PRIO_PROCESS,0,prio - 10);
@@ -93,6 +83,7 @@ int main(int argc,char *argv[]){
   // The sooner we do this, the fewer options there are for abuse
   if(seteuid(getuid()) != 0)
     perror("seteuid");
+#endif
   char *locale;
   locale = getenv("LANG");
   setlocale(LC_ALL,locale);
@@ -100,7 +91,7 @@ int main(int argc,char *argv[]){
   // Defaults
   Quiet = 0;
   int c;
-  while((c = getopt(argc,argv,"I:l:q")) != EOF){
+  while((c = getopt(argc,argv,"I:l:qd:")) != EOF){
     switch(c){
     case 'I':
       strlcpy(IQ_mcast_address_text,optarg,sizeof(IQ_mcast_address_text));
@@ -110,6 +101,9 @@ int main(int argc,char *argv[]){
       break;
     case 'q':
       Quiet++; // Suppress display
+      break;
+    case 'd':
+      Duration = strtod(optarg,NULL);
       break;
     default:
       fprintf(stderr,"Usage: %s -I iq multicast address [-l locale] [-q]\n",argv[0]);
@@ -124,7 +118,7 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,locale);
 
   // Set up input socket for multicast data stream from front end
-  Input_fd = setup_mcast(IQ_mcast_address_text,0);
+  Input_fd = setup_mcast(IQ_mcast_address_text,0,Mcast_ttl,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
@@ -160,7 +154,9 @@ void input_loop(){
   char filename[PATH_MAX];
   memset(filename,0,sizeof(filename));
 
-  while(1){
+  double t = 0;
+
+  while(!isfinite(Duration) || t < Duration){
     // Receive I/Q data from front end
     unsigned char buffer[MAXPKT];
     socklen_t socksize = sizeof(Sender);
@@ -304,6 +300,22 @@ void input_loop(){
     if(offset)
       fseeko(sp->fp,offset,SEEK_CUR);
     fwrite(samples,1,size,sp->fp);
+    t += (double)sample_count / sp->samprate;
   }
 }
  
+void cleanup(void){
+  while(Sessions){
+    // Flush and close each write stream
+    // Be anal-retentive about freeing and clearing stuff even though we're about to exit
+    struct session *next_s = Sessions->next;
+    fflush(Sessions->fp);
+    fclose(Sessions->fp);
+    Sessions->fp = NULL;
+    free(Sessions->iobuffer);
+    Sessions->iobuffer = NULL;
+    free(Sessions);
+    Sessions = next_s;
+  }
+}
+

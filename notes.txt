@@ -1,0 +1,328 @@
+Notes on the KA9Q radio system at UCSD
+
+NETWORK SETUP
+
+The network in the Atkinson Hall radio room consists of a Netgear
+GS110-TP "smart" Ethernet switch. Three ports are used:
+
+Port 1 - UCSD network
+Port 2 - Ubuntu Linux system (ushack.ka9q.net)
+Port 3 - Raspberry Pi at antennas (upi.ka9q.net)
+
+At the moment, the switch (uswitch.ka9q.net) is configured with two
+VLANs: 1 (all ports, no tag) and VLAN 4 with ports 2 and 3 as tagged
+members, to isolate Ubuntu/Pi communications from the UCSD
+network. VLAN 4 is used for a private subnetwork, 192.168.46.0/24,
+with the Ubuntu system acting as a NAT relay to the UCSD network. The
+switch is 192.168.46.3 but I haven't changed the switch management
+VLAN from 1, so currently it can only be accessed by its IPv6 address
+from the UCSD network on port 1. (The password is currently
+'password'; it really should be changed.)
+
+Note that all systems have DNS entries in my own ka9q.net zone simply
+because their names under ucsd.edu are so long and difficult to
+remember and/or type.
+
+This will all go away and become vastly simpler (no VLANs, no NAT)
+when the UCSD network staff assigns the RPi its own IPv4
+address. (They've already configured IPv4 multicast routing, something
+I've been struggling with for weeks. Woo hoo!)
+
+THE SCREEN SESSION MANAGER
+
+The KA9Q radio system consists of a set of modules connected by
+realtime IP multicast protocols. Because the system is still under
+development, I am currently running each module under the 'screen'
+session manager so they can continue to run when I log out and I can
+return to them later without restarting them.  These screen sessions
+are currently created under the user ID of whoever invokes them, which
+is currently me (karn).
+
+The most important 'screen' commands are:
+
+screen -S <name> -- create a screen session with the specified name
+screen -r <name> -- reattach to specified session
+screen -d -r <name> -- force reattach even if attached elsewhere
+ctl-a d -- detach from current screen session, leaving it running
+
+So to start command 'foo' in a screen session named 'foo' you'd say:
+
+screen -S foo
+foo arguments...
+ctl-a d
+
+Note that ctl-a is screen's default command character, which
+interferes with EMACS-style editing.  See the manual page for the
+'screen' command for details. (I don't know if you can access another
+user's screen sessions without logging in or su-ing to that user.)
+
+THE FUNCUBE DAEMON
+
+The 'funcube' daemon (background program) reads and multicasts digital
+IF data from a Funcube dongle, and accepts tuning command packets. It
+must run on the computer that is physically connected to the
+dongle. At present, this is the Raspberry Pi on the roof of Atkinson
+Hall.
+
+Funcube dongle #0 is connected to the UHF Eggbeater antenna and dongle
+#1 is connected to the VHF Eggbeater. A separate instance of 'funcube'
+is needed for each one. The commands (each inside of a 'screen' session) are:
+
+funcube -v -v -d 0 -R iq.uhf.mcast.local
+funcube -v -v -d 1 -R iq.vhf.mcast.local
+
+The -d argument specifies the dongle number.
+
+The -R (recipient) argument specifies the multicast group to which the
+digital IF streams should be sent. These are currently specified in
+the local file /etc/hosts, though they can also be resolved through
+the 'avahi' multicast DNS daemon, the configuration file being
+/etc/avahi/hosts. The /etc/hosts file takes precedence, and is a
+little more reliable.
+
+The two -v options turns on verbose level 2; this shows a real-time
+display of radio parameters: frequency, analog gain settings, signal
+levels, DC offsets, I/Q phase and gain imbalance, A/D overflows, and
+the TCXO (temperature controlled crystal oscillator in the funcube)
+frequency error. A single -v (verbose level 1) shows a few startup
+settings, but not the real-time status display.
+
+The frequency offsets are read from the files
+
+$HOME/.radiostate/cal-funcube-0
+$HOME/.radiostate/cal-funcube-1
+
+At the moment these files don't exist, i.e., the frequency errors are
+assumed to be zero. They're actually around -1.6 to -1.9 ppm, which
+would be expressed in scientific notation, e.g., -1.6e-6. An error of
+-1.6 ppm corresponds to about 234 Hz on 2m and about 3x that on 70cm.
+Enough to be noticeable but still much smaller than the
+horizon-to-horizon doppler shift on a LEO satellite: about +/- 3.3 kHz
+on 2m and +/- 10 kHz on 70cm.
+
+Note that the calibration files are currently in the home directory of
+whoever invokes the program (which is usually me). I should move these
+to a shared system directory, probably under /var/local/lib.
+
+The output from the 'funcube' program is mainly for debugging and
+probably isn't all that interesting in routine use. So instead of
+running them under the 'screen' program they could be started directly
+from the command line with the 'nohup' prefix so they'll continue to
+run when you log out. In this case output is redirected to 'nohup.out'
+so the -v -v options should probably not be given as this will create
+a very large file. E.g.,
+
+nohup funcube -d 0 -R iq.uhf.mcast.local &
+nohup funcube -d 1 -R iq.vhf.mcast.local &
+
+The 'iq' multicast streams are generated with a default IP TTL of 1,
+which keeps UCSD's routers from routing them even if somebody outside
+the radio room asks for them.  (Each is a constant 5.5 Mb/s stream,
+they're read only by the Ubuntu system, and I don't want to cause any
+trouble). They will, however, pass through Ethernet switches (like our
+Netgear) because switches do not decrement or check the IP TTL. If the
+default TTL ever needs to be overridden, it can be done with the -T
+option, e.g., -T 10 would set the IP TTL to 10. It could then pass
+through a maximum of 9 IP routers. (It's a 4-router path from Atkinson
+to room 339 in EBU-II.)
+
+Eventually all this will be automated: I will create systemd scripts
+to start 'funcube' automatically when the system boots, or when you
+connect a funcube dongle (whichever comes last). The only unresolved
+problems are 1) how to access the debug output should anyone need to
+see it and 2) finding an easier way to determine and set the TCXO
+error. Ideally, we'd obviate this by graduating to SDR front ends that
+can be locked to a GPS disciplined oscillator; they will be *exactly*
+on frequency without any adjustment. Unfortunately, these funcube
+dongles lack provisions for an external frequency reference.
+
+THE RADIO PROGRAM
+
+This is essentially a general coverage multi-mode receiver. It reads
+the digital IF streams from the 'funcube' program, tunes to the exact
+frequency desired, and demodulates the signal to audio. It has the most
+complex user interface, but it can also be invoked from the command line
+if there's no need to change the operating frequency or mode.
+
+It can run on the Raspberry Pi (there are enough cycles) but I prefer to run
+it on the Ubuntu system. It is invoked interactively (under a 'screen' session)
+like this:
+
+radio -I iq.vhf.mcast.local -R pcm.vhf.mcast.local -f 144m39 -m fm
+
+or
+
+radio -I iq.uhf.mcast.local -R pcm.uhf.mcast.local -f 446m0 -m fm
+
+The -I (input) option specifies the multicast group with the digital
+IF input (generated by the funcube program on the RPi) and the -R
+(recipient) option gives the multicast group where the demodulated PCM
+audio is to be sent. The default TTL, like that for the IF stream, is
+only 1.  This means it can be monitored or read in the radio room, but
+not outside. If you want to listen, use the opus-compressed stream
+(below)
+
+
+The -f and -m options give the initial frequency and modulation mode,
+respectively. Frequencies can be specified as full integers (e.g.,
+144390000, the APRS frequency) but it's easier to specify it in
+decimal with a 'k', 'm' or 'g' in the decimal point position to
+indicate kilohertz, megahertz or gigahertz, respectively. If no prefix
+is given, the program attempts to guess what you meant (which might be
+wrong).
+
+The user interface uses the 'ncurses' package. You can tune the radio,
+change the modulation mode and tweak the filters. Use the arrow and
+TAB keys to move the cursor and change the tuning.      The 'h' command
+pops up a command summary, 'q' gracefully quits (or you can quit
+ungracefully with ctrl-c).
+
+If you don't need the user interface, use the -q (quiet) command line option.
+
+THE PACKET PROGRAM
+
+The 'packet' program implements something like an AX.25 "KISS TNC" --
+it demodulates Bell 202 audio modulation and decodes and verifies the
+HDLC frames containing AX.25 packets. It is invoked as
+
+packet -I pcm.vhf.mcast.local -I pcm.uhf.mcast.local -R ax25.mcast.local [-v]
+
+A single instance of 'packet' can demodulate multiple PCM streams,
+hence the multiple -I options. The common output is simply
+"ax25.mcast.local", i.e., one multicast stream carries all AX.25
+frames.  The packet rate is very low, and each stream is tagged with
+the 32-bit SSRC (Sending Source) ID of its PCM input stream so you can
+still tell them apart.
+
+The -v option causes each packet to be dumped in hex and ASCII on
+standard output for debug purposes. So if you invoke it like this:
+
+nohup packet -v -I pcm.vhf.mcast.local -I pcm.uhf.mcast.local -R ax25.mcast.local >> /var/log/packet.log 2>&1 &
+
+then it will append its debug output to the file '/var/log/packet.log'
+where it can be easily watched by any number of users with the command
+
+tail -f /var/log/packet.log
+
+The '>>' is standard UNIX shell notation for "append program output to
+file"; note ">" means "overwrite file, destroying anything already
+there".  The 2>&1 term means "combine standard error and output in the
+same stream".
+
+THE APRS PROGRAM
+
+The 'aprs' program reads the AX.25 packet stream from 'packet' and
+generates antenna pointing information for a single specified station
+or for all stations:
+
+aprs -I ax25.mcast.local
+
+The default observer location (I think it's UCSD) is in the source
+code. It can be overridden like this:
+
+aprs -I ax25.mcast.local -L 32.5 -M -117.5 -A 100
+
+where -L gives the latitude (decimal degrees), -M gives the decimal longitude and -A gives
+the altitude in meters.
+
+Again, the output can be appended to a file for easy monitoring:
+
+nohup aprs -I ax25.mcast.local >> aprs.log 2>&1 &
+
+The APRSFEED PROGRAM
+
+This is similar to the 'aprs' program in that it also reads AX.25
+frames, but simply submits them to the international APRS reporting
+network:
+
+nohup aprsfeed -v -I ax25.mcast.local -u kk6uc -p 19964 >> aprsfeed.log 2>&1 &
+
+The log contains the submitted reports as well as the server
+responses. The -u option gives the callsign of the reporting station
+passed to the network; KK6UC is the UCSD Ham Radio Club. Each callsign
+needs a passcode. It's not very secure, as several websites will
+calculate it for you, e.g.
+
+https://apps.magicbug.co.uk/passcode/index.php/passcode
+
+The passcode for KK6UC is "19964".
+
+THE OPUS PROGRAM
+
+The PCM streams from the 'radio' program are at 768 kbs (mono) or 1536
+kb/s (stereo). If you wish to listen to them locally, there's no
+problem but they're a bit fast for communications-quality audio so by
+default they are sent with IP TTL=1 so they won't propagate outside
+the radio room. So to listen elsewhere, listen instead to the opus-compressed
+audio stream generated by:
+
+nohup opus -I pcm.vhf.mcast.local -R opus.vhf.mcast.local -x &
+nohup opus -I pcm.uhf.mcast.local -R opus.uhf.mcast.local -x &
+
+As before, the -I and -R options give the input and recipient
+multicast groups, respectively. The default compressed data rate is 32
+kb/s; this can be changed with the '-r' option. The -x option specifies
+"discontinuous transmission", meaning that Opus will stop sending when
+it sees silence on its input. (When 'radio' is demodulating FM, it has
+a squelch that will stop the PCM output when there's no signal. In
+this case, Opus will also stop sending even if the -x option isn't
+given.)
+
+The opus program doesn't routinely generate messages, so it can be run
+with the nohup prefix; it doesn't need to be in a 'screen' session
+(though it can be). Old sessions aren't currently purged so in theory
+this is a memory leak, but in practice this hasn't been a problem
+
+Opus has a default TTL of 10, which should be enough for the UCSD campus.
+
+THE MONITOR PROGRAM
+
+That's it for the stuff running in the Atkinson radio room when it's
+unattended. To listen locally, you'd turn on the speakers and run the
+"monitor" program, e.g.,
+
+monitor -I pcm.vhf.mcast.local -I pcm.uhf.mcast.local
+
+To listen from anywhere else on the UCSD campus, e.g., EBU-II room
+339, you would instead say
+
+monitor -I opus.vhf.mcast.local -I opus.uhf.mcast.local
+
+to use the lower rate opus stream. (PCM won't get through because it's
+generated with IP TTL=1 by default.)
+
+The monitor program has an interactive interface displaying each
+active session and letting you change its audio level (with the up and
+down arrow keys) and its position in the stereo image (with the left
+and right arrow keys). Hit TAB to step from one session to the next.
+The playout buffer can be reset with the 'r' command and the session
+deleted with the 'd' command.  (It will, however, be recreated with 0
+dB gain and center position if it is still active; this is mainly for
+clearing out stale inactive sessions.)
+
+It *should* also be possible to listen in from anywhere on the UCSD
+campus with the open source 'vlc' application (available for iOS,
+Android, Windows, OSX, Linux, etc).  Give it one of the following
+URLs:
+
+http://www.ka9q.net/ucsd-uhf.sdp
+http://www.ka9q.net/ucsd-vhf.sdp
+
+These are "session descriptor files" on my personal web server that
+specify the multicast group and codec type to VLC. Note that this will
+only work on the UCSD network except for the guest wireless network,
+which I'm told doesn't support multicasting. The regular protected
+network (or any Ethernet connection) should work. It won't work off campus (yet).
+
+Enjoy!
+
+Phil Karn, KA9Q
+karn@ka9q.net
+15 Aug 2018
+
+
+
+
+
+
+
