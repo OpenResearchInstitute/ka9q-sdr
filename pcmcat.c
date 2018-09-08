@@ -1,4 +1,4 @@
-// $Id: pcmcat.c,v 1.6 2018/09/05 08:18:22 karn Exp $
+// $Id: pcmcat.c,v 1.7 2018/09/08 06:06:21 karn Exp $
 // Receive and stream PCM RTP data to stdout
 
 #define _GNU_SOURCE 1
@@ -30,72 +30,23 @@ struct pcmstream {
   struct rtp_state rtp_state;
 };
 
-char *Mcast_address_text;
+// Config constants
 int const Bufsize = 2048;
 float const Samprate = 48000;
 
+// Command line params
+char *Mcast_address_text;
+int Verbose;
+int Stereo;   // Force stereo output
+
 int Input_fd = -1;
 struct pcmstream *Pcmstream;
-int Verbose;
 int Sessions; // Session count - limit to 1 for now
-int Stereo;   // Force stereo output
 uint32_t Ssrc; // Requested SSRC
 
-struct pcmstream *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
-  struct pcmstream *sp;
-  for(sp = Pcmstream; sp != NULL; sp = sp->next){
-    if(sp->ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
-      // Found it
-      if(sp->prev != NULL){
-	// Not at top of bucket chain; move it there
-	if(sp->next != NULL)
-	  sp->next->prev = sp->prev;
-
-	sp->prev->next = sp->next;
-	sp->prev = NULL;
-	sp->next = Pcmstream;
-	Pcmstream = sp;
-      }
-      return sp;
-    }
-  }
-  return NULL;
-}
-// Create a new session, partly initialize
-struct pcmstream *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_t seq,uint32_t timestamp){
-  struct pcmstream *sp;
-
-  if((sp = calloc(1,sizeof(*sp))) == NULL)
-    return NULL; // Shouldn't happen on modern machines!
-  
-  // Initialize entry
-  memcpy(&sp->sender,sender,sizeof(struct sockaddr));
-  sp->ssrc = ssrc;
-
-  // Put at head of bucket chain
-  sp->next = Pcmstream;
-  if(sp->next != NULL)
-    sp->next->prev = sp;
-  Pcmstream = sp;
-  return sp;
-}
-
-int close_session(struct pcmstream *sp){
-  if(sp == NULL)
-    return -1;
-  
-  // Remove from linked list
-  if(sp->next != NULL)
-    sp->next->prev = sp->prev;
-  if(sp->prev != NULL)
-    sp->prev->next = sp->next;
-  else
-    Pcmstream = sp->next;
-  free(sp);
-  return 0;
-}
-
-
+struct pcmstream *lookup_session(const struct sockaddr *sender,const uint32_t ssrc);
+struct pcmstream *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_t seq,uint32_t timestamp);
+int close_session(struct pcmstream *sp);
 
 int main(int argc,char *argv[]){
   setlocale(LC_ALL,getenv("LANG"));
@@ -126,7 +77,7 @@ int main(int argc,char *argv[]){
   Mcast_address_text = argv[optind];
 
   // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0,0);
+  Input_fd = setup_mcast(Mcast_address_text,0,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input from %s\n",
 	    Mcast_address_text);
@@ -244,6 +195,62 @@ int main(int argc,char *argv[]){
     }
   }
   exit(0);
+}
+
+
+
+struct pcmstream *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
+  struct pcmstream *sp;
+  for(sp = Pcmstream; sp != NULL; sp = sp->next){
+    if(sp->ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
+      // Found it
+      if(sp->prev != NULL){
+	// Not at top of bucket chain; move it there
+	if(sp->next != NULL)
+	  sp->next->prev = sp->prev;
+
+	sp->prev->next = sp->next;
+	sp->prev = NULL;
+	sp->next = Pcmstream;
+	Pcmstream = sp;
+      }
+      return sp;
+    }
+  }
+  return NULL;
+}
+// Create a new session, partly initialize
+struct pcmstream *make_session(struct sockaddr const *sender,uint32_t ssrc,uint16_t seq,uint32_t timestamp){
+  struct pcmstream *sp;
+
+  if((sp = calloc(1,sizeof(*sp))) == NULL)
+    return NULL; // Shouldn't happen on modern machines!
+  
+  // Initialize entry
+  memcpy(&sp->sender,sender,sizeof(struct sockaddr));
+  sp->ssrc = ssrc;
+
+  // Put at head of bucket chain
+  sp->next = Pcmstream;
+  if(sp->next != NULL)
+    sp->next->prev = sp;
+  Pcmstream = sp;
+  return sp;
+}
+
+int close_session(struct pcmstream *sp){
+  if(sp == NULL)
+    return -1;
+  
+  // Remove from linked list
+  if(sp->next != NULL)
+    sp->next->prev = sp->prev;
+  if(sp->prev != NULL)
+    sp->prev->next = sp->next;
+  else
+    Pcmstream = sp->next;
+  free(sp);
+  return 0;
 }
 
 

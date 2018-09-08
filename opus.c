@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.24 2018/09/05 08:18:22 karn Exp $
+// $Id: opus.c,v 1.25 2018/09/08 06:06:21 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -22,28 +22,6 @@
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-char *Mcast_input_address_text;     // Multicast address we're listening to
-char *Mcast_output_address_text;    // Multicast address we're sending to
-
-int const Bufsize = 8192;     // Maximum samples/words per RTP packet - must be bigger than Ethernet MTU
-int const Samprate = 48000;   // Too hard to handle other sample rates right now
-                              // Opus will notice the actual audio bandwidth, so there's no real cost to this
-int Verbose;                  // Verbosity flag (currently unused)
-
-int Input_fd = -1;            // Multicast receive socket
-int Output_fd = -1;           // Multicast receive socket
-float Opus_blocktime = 20;    // 20 ms, a reasonable default
-int Opus_frame_size;
-int Opus_bitrate = 32;        // Opus stream audio bandwidth; default 32 kb/s
-int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
-int Discontinuous = 0;        // Off by default
-int Fec = 0;                  // Use forward error correction
-
-
-float const SCALE = 1./SHRT_MAX;
-
-
 struct session {
   struct session *prev;       // Linked list pointers
   struct session *next; 
@@ -64,9 +42,31 @@ struct session {
 
   unsigned long underruns;  // Callback count of underruns (stereo samples) replaced with silence
 };
+
+
+// Global config variables
+int const Bufsize = 8192;     // Maximum samples/words per RTP packet - must be bigger than Ethernet MTU
+int const Samprate = 48000;   // Too hard to handle other sample rates right now
+                              // Opus will notice the actual audio bandwidth, so there's no real cost to this
+
+int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
+float const SCALE = 1./SHRT_MAX;
+
+// Command line params
+char *Mcast_input_address_text;     // Multicast address we're listening to
+char *Mcast_output_address_text;    // Multicast address we're sending to
+int Verbose;                  // Verbosity flag (currently unused)
+int Opus_bitrate = 32;        // Opus stream audio bandwidth; default 32 kb/s
+int Discontinuous = 0;        // Off by default
+float Opus_blocktime = 20;    // 20 ms, a reasonable default
+int Fec = 0;                  // Use forward error correction
+int Mcast_ttl = 10;           // our multicast output is frequently routed
+
+// Global variables
+int Input_fd = -1;            // Multicast receive socket
+int Output_fd = -1;           // Multicast receive socket
+int Opus_frame_size;
 struct session *Audio;
-
-
 
 void closedown(int);
 struct session *lookup_session(const struct sockaddr *,uint32_t);
@@ -141,12 +141,12 @@ int main(int argc,char * const argv[]){
     exit(1);
   }
 
-  Input_fd = setup_mcast(Mcast_input_address_text,0,0);
+  Input_fd = setup_mcast(Mcast_input_address_text,0,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input on %s: %sn",Mcast_input_address_text,strerror(errno));
     exit(1);
   }
-  Output_fd = setup_mcast(Mcast_output_address_text,1,0);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);

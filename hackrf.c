@@ -1,4 +1,4 @@
-// $Id: hackrf.c,v 1.12 2018/09/05 08:18:22 karn Exp $
+// $Id: hackrf.c,v 1.13 2018/09/08 06:06:21 karn Exp $
 // Read from HackRF
 // Multicast raw 8-bit I/Q samples
 // Accept control commands from UDP socket
@@ -62,9 +62,8 @@ int Blocksize = 350;
 int Device = 0;      // Which of several to use
 int Offset=1;     // Default to offset high by +Fs/4 downconvert in software to avoid DC
 int Daemonize = 0;
-
-char *Rundir = "/run/hackrf";
-
+int Mcast_ttl = 1; // Don't send fast IQ streams beyond the local network by default
+char *Rundir = "/run/hackrf"; // Where 'status' and 'pid' get written
 
 float const DC_alpha = 1.0e-7;  // high pass filter coefficient for DC offset estimates, per sample
 float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
@@ -80,7 +79,7 @@ pthread_t Process_thread;
 pthread_t AGC_thread;
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
 int Ctl_sock;
-extern int Mcast_ttl;
+
 struct rtp_state Rtp;
 
 complex float Sampbuffer[BUFFERSIZE];
@@ -469,7 +468,7 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,Locale);
   
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1,0);
+  Rtp_sock = setup_mcast(dest,1,Mcast_ttl,0);
   if(Rtp_sock == -1){
     errmsg("Can't create multicast socket: %s",strerror(errno));
     exit(1);

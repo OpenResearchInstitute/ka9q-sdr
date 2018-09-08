@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.81 2018/09/05 08:18:22 karn Exp $
+// $Id: monitor.c,v 1.82 2018/09/08 06:06:21 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -20,18 +20,11 @@
 #include <locale.h>
 #include <signal.h>
 
-
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-#define SAMPRATE 48000        // Too hard to handle other sample rates right now
-#define MAX_MCAST 20          // Maximum number of multicast addresses
-#define PKTSIZE 16384         // Maximum bytes per RTP packet - must be bigger than Ethernet MTU (including offloaded reassembly)
-#define SAMPPCALLBACK (SAMPRATE/50)     // 20 ms @ 48 kHz
-#define BUFFERSIZE (1<<19)    // about 10.92 sec at 48 kHz stereo - must be power of 2!!
-
 // Incoming RTP packets
+#define PKTSIZE 16384         // Maximum bytes per RTP packet - must be bigger than Ethernet MTU (including offloaded reassembly)
 struct packet {
   struct packet *next;
   struct rtp_header rtp;
@@ -73,22 +66,33 @@ struct session {
 
   long long wptr;           // Unwrapped write pointer, not wrapped (will wrap in 6 million years!)
 
-  int terminate;
+  int terminate;            // Set to cause thread to terminate voluntarily
 };
 
-char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
-char Audiodev[256];           // Name of audio device; empty means portaudio's default
+
+// Global config variables
+#define SAMPRATE 48000        // Too hard to handle other sample rates right now
+#define MAX_MCAST 20          // Maximum number of multicast addresses
+
+#define SAMPPCALLBACK (SAMPRATE/50)     // 20 ms @ 48 kHz
+#define BUFFERSIZE (1<<19)    // about 10.92 sec at 48 kHz stereo - must be power of 2!!
+float const SCALE = 1./SHRT_MAX;
+
+// Command line parameters
 int Update_interval = 100;    // Default time in ms between display updates
+char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
 int List_audio;               // List audio output devices and exit
 int Verbose;                  // Verbosity flag (currently unused)
 int Quiet;                    // Disable curses
+int Mcast_ttl = 0;            // We don't transmit
+
+// Global variables
+char Audiodev[256];           // Name of audio device; empty means portaudio's default
 int Nfds;                     // Number of streams
 struct session *Session;      // Link to head of session structure chain
 pthread_mutex_t Sess_mutex;
-
 PaStream *Pa_Stream;          // Portaudio stream handle
 int inDevNum;                 // Portaudio's audio output device index
-float const SCALE = 1./SHRT_MAX;
 WINDOW *Mainscr;
 struct timeval Start_unix_time;
 PaTime Start_pa_time;
@@ -97,21 +101,7 @@ pthread_t Display_task;
 float Output_buffer[BUFFERSIZE][2]; // Decoded audio output, written by processing thread and read by PA callback
 long long Rptr;                // Unwrapped read pointer (will overflow in 6 million years)
 
-void cleanup(void){
-  Pa_Terminate();
-  if(!Quiet){
-    echo();
-    nocbreak();
-    endwin();
-  }
-}
-
-void closedown(int s){
-  fprintf(stderr,"Signal %d, exiting\n",s);
-  exit(0);
-}
-
-
+void cleanup(void);
 void closedown(int);
 void *display(void *);
 struct session *lookup_session(const struct sockaddr_storage *,uint32_t);
@@ -274,7 +264,7 @@ void *sockproc(void *arg){
   char *mcast_address_text = (char *)arg;
 
   // Set up multicast input
-  int input_fd = setup_mcast(mcast_address_text,0,0);
+  int input_fd = setup_mcast(mcast_address_text,0,Mcast_ttl,0);
   if(input_fd == -1){
     fprintf(stderr,"Can't set up input %s\n",mcast_address_text);
     pthread_exit(NULL);
@@ -779,4 +769,18 @@ int close_session(struct session *sp){
   pthread_mutex_unlock(&Sess_mutex);  
   free(sp);
   return 0;
+}
+void closedown(int s){
+  fprintf(stderr,"Signal %d, exiting\n",s);
+  exit(0);
+}
+
+
+void cleanup(void){
+  Pa_Terminate();
+  if(!Quiet){
+    echo();
+    nocbreak();
+    endwin();
+  }
 }

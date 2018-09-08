@@ -1,4 +1,4 @@
-// $Id: pcmsend.c,v 1.8 2018/09/05 08:18:22 karn Exp $
+// $Id: pcmsend.c,v 1.9 2018/09/08 06:06:21 karn Exp $
 // Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -20,24 +20,26 @@
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-char *Audiodev = "";
-char *Mcast_output_address_text = "audio-opus-mcast.local";     // Multicast address we're sending to
-
+// Global config constants
 #define BUFFERSIZE (1<<18)    // Size of audio ring buffer in mono samples. 2^18 is 2.73 sec at 48 kHz stereo
                               // Defined as macro so the Audiodata[] declaration below won't bother some compilers
 int const Samprate = 48000;   // Too hard to handle other sample rates right now
-int Verbose;                  // Verbosity flag (currently unused)
-
 int const Channels = 2;
 #define FRAMESIZE 240         // 5 ms @ 48 kHz makes 960 bytes/packet
 // End of config stuff
 
+
+// Command line params
+char *Audiodev = "";
+char *Mcast_output_address_text = "";     // Multicast address we're sending to
+int Verbose;                  // Verbosity flag (currently unused)
+int Mcast_ttl = 1;
+
+// Global vars
 int Output_fd = -1;
 float Audiodata[BUFFERSIZE];
 int Samples_available;
 int Wptr;   // Write pointer for callback
-
 
 static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       unsigned long framesPerBuffer,
@@ -45,22 +47,8 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       PaStreamCallbackFlags statusFlags,
 		       void *userData);
 
-
-void cleanup(void){
-  Pa_Terminate();
-  
-  if(Output_fd != -1)
-    close(Output_fd);
-  Output_fd = -1;
-}
-
-
-void closedown(int s){
-  fprintf(stderr,"signal %d\n",s);
-  exit(0);
-}
-
-
+void cleanup(void);
+void closedown(int);
 
 // Convert unsigned number modulo buffersize to a signed 2's complement
 static inline int signmod(unsigned int const a){
@@ -97,7 +85,6 @@ int main(int argc,char * const argv[]){
 
   int c;
   int List_audio = 0;
-  Mcast_ttl = 1; // By default, don't let it be routed
   while((c = getopt(argc,argv,"LT:vI:R:")) != EOF){
     switch(c){
     case 'L':
@@ -196,7 +183,7 @@ int main(int argc,char * const argv[]){
 
 
   // Set up multicast transmit socket
-  Output_fd = setup_mcast(Mcast_output_address_text,1,0);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
@@ -281,3 +268,18 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
   }
   return paContinue;
 }
+void cleanup(void){
+  Pa_Terminate();
+  
+  if(Output_fd != -1)
+    close(Output_fd);
+  Output_fd = -1;
+}
+
+
+void closedown(int s){
+  fprintf(stderr,"signal %d\n",s);
+  exit(0);
+}
+
+

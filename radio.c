@@ -1,4 +1,4 @@
-// $Id: radio.c,v 1.97 2018/09/01 22:33:29 karn Exp $
+// $Id: radio.c,v 1.98 2018/09/08 06:07:05 karn Exp $
 // Core of 'radio' program - control LOs, set frequency/mode, etc
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -61,7 +61,6 @@ void *proc_samples(void *arg){
   int in_cnt = 0;
   struct packet *pkt = NULL;
 
-
   while(1){
     // Pull next I/Q data packet off queue
     pthread_mutex_lock(&demod->qmutex);
@@ -81,6 +80,11 @@ void *proc_samples(void *arg){
     case IQ_PT8:
       sampcount = pkt->len / (2 * sizeof(signed char));
       break;
+    }
+    if(pkt->rtp.ssrc != demod->rtp_state.ssrc){
+      // SSRC changed; reset sample count.
+      // rtp_process will reset packet count
+      demod->samples = 0;
     }
     int time_step = rtp_process(&demod->rtp_state,&pkt->rtp,sampcount);
     if(time_step < 0 || time_step > 192000){

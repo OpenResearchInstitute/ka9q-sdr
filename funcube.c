@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.50 2018/09/05 08:18:22 karn Exp $
+// $Id: funcube.c,v 1.51 2018/09/08 06:06:21 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -54,12 +54,17 @@ struct sdrstate {
   int overrun;               // A/D overrun count
 };
 
-int ADC_samprate = 192000;
+// constants, some of which you might want to tweak
+float const AGC_upper = -20;
+float const AGC_lower = -50;
+int const ADC_samprate = 192000;
 float const SCALE16 = 1./SHRT_MAX;
-int No_hold_open; // if set, close control between commands
 float const DC_alpha = 1.0e-6;  // high pass filter coefficient for DC offset estimates, per sample
-float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
+float const Power_alpha = 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
+char const *Rundir = "/run/funcube"; // Where 'status' and 'pid' are created
 
+// Variables set by command line options
+int No_hold_open; // if set, close control between commands
 // A larger blocksize makes more efficient use of each frame, but the receiver generally runs on
 // frames that match the Opus codec: 2.5, 5, 10, 20, 40, 60, 180, 100, 120 ms
 // So to minimize latency, make this a common denominator:
@@ -69,21 +74,12 @@ int Device = 0;
 char *Locale;
 double Calibration = 0;
 int Daemonize;
+int Mcast_ttl = 1; // Don't send fast IQ streams beyond the local network by default
+
+// Global variables
 struct rtp_state Rtp;
-
-char *Rundir = "/run/funcube";
-
-void *fcd_command(void *arg);
-int process_fc_command(char *,int);
-double set_fc_LO(double);
-double fcd_actual(unsigned int u32Freq);
-int front_end_init(int device, int samprate,int L);
-int get_adc(short *buffer,const int L);
-void *display(void *arg);
-
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
 int Ctl_sock;
-extern int Mcast_ttl;
 struct sdrstate FCD;
 pthread_t FCD_control_thread;
 pthread_t Display_thread;
@@ -93,23 +89,15 @@ FILE *Status;
 char *Status_filename;
 char *Pid_filename;
 
-
+void errmsg(const char *fmt,...);
+int process_fc_command(char *,int);
+double set_fc_LO(double);
+double fcd_actual(unsigned int u32Freq);
+int front_end_init(int device, int samprate,int L);
+int get_adc(short *buffer,const int L);
+void *fcd_command(void *arg);
+void *display(void *arg);
 void *agc(void *arg);
-
-void errmsg(const char *fmt,...){
-  va_list ap;
-
-  va_start(ap,fmt);
-
-  if(Daemonize)
-    vsyslog(LOG_INFO,fmt,ap);
-  else {
-    vfprintf(stderr,fmt,ap);
-    fflush(stderr);
-  }
-  va_end(ap);
-}
-
 
 
 int main(int argc,char *argv[]){
@@ -286,7 +274,7 @@ int main(int argc,char *argv[]){
   }
   // Set up RTP output socket
   usleep(2000000);
-  Rtp_sock = setup_mcast(dest,1,0);
+  Rtp_sock = setup_mcast(dest,1,Mcast_ttl,0);
   if(Rtp_sock == -1){
     errmsg("Can't create multicast socket: %s\n",strerror(errno));
     exit(1);
@@ -763,10 +751,11 @@ void *agc(void *arg){
     float powerdB = 10*log10f(FCD.in_power);
     int change = 0;
 
-    if(powerdB > -20){ // -20dBFS upper limit
-      change = round(-20 - powerdB);
-    } else if(powerdB < -60){ // -60dBFS dB lower limit
-      change = round(-60 - powerdB);
+    // Hysteresis to keep AGC from changing too often
+    if(powerdB > AGC_upper){ // AGC upper limit
+      change = round(AGC_upper - powerdB);
+    } else if(powerdB < AGC_lower){ // AGC lower limit
+      change = round(AGC_lower - powerdB);
     } else
       continue;
     
@@ -828,3 +817,18 @@ void *agc(void *arg){
   }
   return NULL;
 }
+void errmsg(const char *fmt,...){
+  va_list ap;
+
+  va_start(ap,fmt);
+
+  if(Daemonize)
+    vsyslog(LOG_INFO,fmt,ap);
+  else {
+    vfprintf(stderr,fmt,ap);
+    fflush(stderr);
+  }
+  va_end(ap);
+}
+
+

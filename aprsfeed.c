@@ -1,4 +1,4 @@
-// $Id: aprsfeed.c,v 1.18 2018/09/05 08:18:22 karn Exp $
+// $Id: aprsfeed.c,v 1.20 2018/09/08 08:59:13 karn Exp $
 // Process AX.25 frames containing APRS data, feed to APRS2 network
 // Copyright 2018, Phil Karn, KA9Q
 
@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "multicast.h"
 #include "ax25.h"
@@ -26,10 +27,10 @@ char *User;
 char *Passcode;
 char *Logfilename;
 FILE *Logfile;
-
 int Verbose;
-int Input_fd = -1;
+int Mcast_ttl = 0;
 
+int Input_fd = -1;
 int Network_fd = -1;
 
 void *netreader(void *arg);
@@ -67,13 +68,12 @@ int main(int argc,char *argv[]){
       Mcast_address_text = optarg;
       break;
     default:
-      fprintf(stderr,"Usage: %s -u user -p passcode [-v] [-I mcast_address][-h host]\n",argv[0]);
-      fprintf(stderr,"Defaults: %s -I %s -h %s\n",argv[0],Mcast_address_text,Host);
+      fprintf(stderr,"Usage: %s -u user [-p passcode] [-v] [-I mcast_address][-h host]\n",argv[0]);
       exit(1);
     }
   }
   // Set up multicast input
-  if((Input_fd = setup_mcast(Mcast_address_text,0,0)) == -1){
+  if((Input_fd = setup_mcast(Mcast_address_text,0,Mcast_ttl,0)) == -1){
     fprintf(stderr,"Can't set up multicast input from %s\n",Mcast_address_text);
     exit(1);
   }
@@ -87,11 +87,31 @@ int main(int argc,char *argv[]){
     setlinebuf(Logfile);
     fprintf(Logfile,"APRS feeder program by KA9Q\n");
   }
-  if(User == NULL || Passcode == NULL){
-    fprintf(stderr,"Must specify -u User -p passcode\n");
+  if(User == NULL){
+    fprintf(stderr,"Must specify -u User\n");
     exit(1);
   }
+  if(!Passcode){
+    // Calculate trivial hash authenticator
+    int hash = 0x73e2;
+    char callsign[11];
+    strncpy(callsign,User,sizeof(callsign)-1);
+    char *cp;
+    if((cp = strchr(callsign,'-')) != NULL)
+      *cp = '\0';
+    
+    int len = strlen(callsign);
 
+    for(int i=0; i<len; i += 2){
+      hash ^= toupper(callsign[i]) << 8;
+      hash ^= toupper(callsign[i+1]);
+    }
+    hash &= 0x7fff;
+    if(asprintf(&Passcode,"%d",hash) < 0){
+      fprintf(stderr,"Unexpected error in computing passcode\n");
+      exit(1);
+    }
+  }
 
   {
   struct addrinfo hints;

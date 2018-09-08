@@ -1,4 +1,4 @@
-// $Id: iqrecord.c,v 1.20 2018/09/05 08:18:22 karn Exp $
+// $Id: iqrecord.c,v 1.21 2018/09/08 06:06:21 karn Exp $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
 // Copyright 2018 Phil Karn, KA9Q
@@ -59,8 +59,10 @@ struct session {
 };
 
 int Quiet;
+int Mcast_ttl = 0; // We don't transmit
 double Duration = INFINITY;
 char IQ_mcast_address_text[256];
+
 struct sockaddr Sender;
 struct sockaddr Input_mcast_sockaddr;
 int Input_fd;
@@ -69,21 +71,7 @@ struct session *Sessions;
 
 void closedown(int a);
 void input_loop(void);
-
-void cleanup(void){
-  while(Sessions){
-    // Flush and close each write stream
-    // Be anal-retentive about freeing and clearing stuff even though we're about to exit
-    struct session *next_s = Sessions->next;
-    fflush(Sessions->fp);
-    fclose(Sessions->fp);
-    Sessions->fp = NULL;
-    free(Sessions->iobuffer);
-    Sessions->iobuffer = NULL;
-    free(Sessions);
-    Sessions = next_s;
-  }
-}
+void cleanup(void);
 
 int main(int argc,char *argv[]){
 #if 0 // Better done manually or in systemd?
@@ -130,7 +118,7 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,locale);
 
   // Set up input socket for multicast data stream from front end
-  Input_fd = setup_mcast(IQ_mcast_address_text,0,0);
+  Input_fd = setup_mcast(IQ_mcast_address_text,0,Mcast_ttl,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
@@ -316,3 +304,18 @@ void input_loop(){
   }
 }
  
+void cleanup(void){
+  while(Sessions){
+    // Flush and close each write stream
+    // Be anal-retentive about freeing and clearing stuff even though we're about to exit
+    struct session *next_s = Sessions->next;
+    fflush(Sessions->fp);
+    fclose(Sessions->fp);
+    Sessions->fp = NULL;
+    free(Sessions->iobuffer);
+    Sessions->iobuffer = NULL;
+    free(Sessions);
+    Sessions = next_s;
+  }
+}
+

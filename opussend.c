@@ -1,4 +1,4 @@
-// $Id: opussend.c,v 1.19 2018/09/05 08:18:22 karn Exp $
+// $Id: opussend.c,v 1.20 2018/09/08 06:06:21 karn Exp $
 // Multicast local audio with Opus
 // Copyright Feb 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -21,22 +21,24 @@
 #include "misc.h"
 #include "multicast.h"
 
-// Global config variables
-char *Audiodev = "";
-char *Mcast_output_address_text;  // Multicast address we're sending to
-
+// Global config constants
 #define BUFFERSIZE (1<<18)    // Size of audio ring buffer in mono samples. 2^18 is 2.73 sec at 48 kHz stereo
                               // Defined as macro so the Audiodata[] declaration below won't bother some compilers
 int const Samprate = 48000;   // Too hard to handle other sample rates right now
                               // Opus will notice the actual audio bandwidth, so there's no real cost to this
-int Verbose;                  // Verbosity flag (currently unused)
+int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
 
-// Opus codec params (defaults)
+
+// Command line params
+char *Audiodev = "";
+char *Mcast_output_address_text;  // Multicast address we're sending to
+int Verbose;                  // Verbosity flag (currently unused)
+// Opus codec params (with defaults)
 float Opus_blocktime = 20;    // 20 ms, a reasonable default
 int Opus_bitrate = 32;        // Opus stream audio bandwidth; default 32 kb/s
-int const Channels = 2;       // Stereo - no penalty if the audio is actually mono, Opus will figure it out
 int Discontinuous = 0;        // Off by default
 int Fec = 0;
+int Mcast_ttl = 10;           // We're often routed
 // End of config stuff
 
 OpusEncoder *Opus;
@@ -51,24 +53,9 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       const PaStreamCallbackTimeInfo* timeInfo,
 		       PaStreamCallbackFlags statusFlags,
 		       void *userData);
+void cleanup(void);
+void closedown(int);
 
-
-void cleanup(void){
-  Pa_Terminate();
-  if(Opus != NULL)
-    opus_encoder_destroy(Opus);
-  Opus = NULL;
-  
-  if(Output_fd != -1)
-    close(Output_fd);
-  Output_fd = -1;
-}
-
-void closedown(int s){
-  fprintf(stderr,"Signal %d\n",s);
-
-  exit(0);
-}
 
 // Convert unsigned number modulo buffersize to a signed 2's complement
 static inline int signmod(unsigned int const a){
@@ -270,7 +257,7 @@ int main(int argc,char * const argv[]){
     fprintf(stderr,"Must specify -R mcast_output_address\n");
     exit(1);
   }
-  Output_fd = setup_mcast(Mcast_output_address_text,1,0);
+  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
@@ -367,3 +354,20 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
   }
   return paContinue;
 }
+void cleanup(void){
+  Pa_Terminate();
+  if(Opus != NULL)
+    opus_encoder_destroy(Opus);
+  Opus = NULL;
+  
+  if(Output_fd != -1)
+    close(Output_fd);
+  Output_fd = -1;
+}
+
+void closedown(int s){
+  fprintf(stderr,"Signal %d\n",s);
+
+  exit(0);
+}
+

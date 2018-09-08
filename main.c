@@ -1,4 +1,4 @@
-// $Id: main.c,v 1.119 2018/09/05 08:18:22 karn Exp $
+// $Id: main.c,v 1.121 2018/09/08 08:21:16 karn Exp $
 // Read complex float samples from multicast stream (e.g., from funcube.c)
 // downconvert, filter, demodulate, optionally compress and multicast audio
 // Copyright 2017, Phil Karn, KA9Q, karn@ka9q.net
@@ -28,40 +28,35 @@
 #include "radio.h"
 #include "filter.h"
 
-#define MAXPKT 1500 // Maximum bytes of data in incoming I/Q packet
 
-void closedown(int);
-void *rtp_recv(void *);
-void *rtcp_send(void *);
+// Config constants
+#define MAXPKT 1500 // Maximum bytes of data in incoming I/Q packet
+char Libdir[] = "/usr/local/share/ka9q-radio";
+int static DAC_samprate = 48000;
+
+// Command line Parameters with default values
+int Nthreads = 1;
+int Quiet = 0;
+int Verbose = 0;
+char Statepath[PATH_MAX];
+char Locale[256] = "en_US.UTF-8";
+int Update_interval = 100;  // 100 ms between screen updates
+int Mcast_ttl = 1;
+int SDR_correct = 0;
 
 // Primary control blocks for downconvert/filter/demodulate and audio output
 // Note: initialized to all zeroes, like all global variables
 struct demod Demod;
 struct audio Audio;
 
-// Parameters with default values
-char Libdir[] = "/usr/local/share/ka9q-radio";
-int Nthreads = 1;
-int DAC_samprate = 48000;
-int Quiet = 0;
-int Verbose = 0;
-char Statepath[PATH_MAX];
-char Locale[256] = "en_US.UTF-8";
-int Update_interval = 100;  // 100 ms between screen updates
-int SDR_correct = 0;
 struct timeval Starttime;      // System clock at timestamp 0, for RTCP
 
 void audio_cleanup(void *);
-
-void cleanup(void){
-  audio_cleanup(&Audio);  // Not really necessary
-}
-
-void closedown(int a){
-  if(!Quiet)
-    fprintf(stderr,"Signal %d\n",a);
-  exit(1);
-}
+void closedown(int);
+void *rtp_recv(void *);
+void *rtcp_send(void *);
+void cleanup(void);
+void closedown(int);
 
 
 // The main program sets up the demodulator parameter defaults,
@@ -231,7 +226,7 @@ int main(int argc,char *argv[]){
   pthread_cond_init(&demod->qcond,NULL);
 
   // Input socket for I/Q data from SDR
-  demod->input_fd = setup_mcast(demod->iq_mcast_address_text,0,0);
+  demod->input_fd = setup_mcast(demod->iq_mcast_address_text,0,0,0);
   if(demod->input_fd == -1){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
@@ -243,7 +238,7 @@ int main(int argc,char *argv[]){
   gettimeofday(&Starttime,NULL);
 
   // Blocksize really should be computed from demod->L and decimate
-  if(setup_audio(audio) != 0){
+  if(setup_audio(audio,Mcast_ttl) != 0){
     fprintf(stderr,"Audio setup failed\n");
     exit(1);
   }
@@ -336,7 +331,14 @@ void *rtp_recv(void *arg){
     if(pkt->rtp.type != IQ_PT && pkt->rtp.type != IQ_PT8)
       continue; // Wrong type
   
-    // Note these are in host byte order, i.e., *little* endian because we don't have to interoperate with anything else
+    // Unlike 'opus', 'packet', 'monitor', etc, 'radio' is nominally an interactive program so we don't keep track of SSRCs.
+    // All digital IF traffic to this multicast group with the correct payload type will be accepted so that we don't have to restart
+    // the single copy of 'radio' when the SDR hardware daemon restarts.
+    // Maybe this should change, but it's hard to know what to do except when running as a non-interactive
+    // background daemon. In that case, a new SSRC in the digital IF stream could fork a new instance of 'radio' with the same parameters,
+    // and it in turn would send demodulated PCM to a new SSRC.
+
+    // These are in host byte order, i.e., *little* endian because we don't have to interoperate with anything else
     struct status new_status;
     new_status.timestamp = *(long long *)dp;
     new_status.frequency = *(double *)&dp[8];
@@ -452,9 +454,6 @@ int loadstate(struct demod *dp,char const *filename){
   return 0;
 }
 
-extern struct timeval Starttime;
-extern int Payload_bytes;
-
 // RTP control protocol sender task
 void *rtcp_send(void *arg){
   struct demod *demod = (struct demod *)arg;
@@ -497,14 +496,16 @@ void *rtcp_send(void *arg){
     // CNAME
     char hostname[1024];
     gethostname(hostname,sizeof(hostname));
-    char *string;
-    asprintf(&string,"radio@%s",hostname);
-    if(strlen(string) <= 255){
+    char *string = NULL;
+    int sl = asprintf(&string,"radio@%s",hostname);
+    if(sl > 0 && sl <= 255){
       sdes[0].type = CNAME;
       strcpy(sdes[0].message,string);
       sdes[0].mlen = strlen(sdes[0].message);
     }
-    free(string); string = NULL;
+    if(string){
+      free(string); string = NULL;
+    }
 
     sdes[1].type = NAME;
     strcpy(sdes[1].message,"KA9Q Radio Program");
@@ -525,4 +526,13 @@ void *rtcp_send(void *arg){
   done:;
     usleep(1000000);
   }
+}
+void cleanup(void){
+  audio_cleanup(&Audio);  // Not really necessary
+}
+
+void closedown(int a){
+  if(!Quiet)
+    fprintf(stderr,"Signal %d\n",a);
+  exit(1);
 }

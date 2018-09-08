@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.31 2018/09/05 08:18:22 karn Exp $
+// $Id: multicast.c,v 1.32 2018/09/08 06:06:21 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -11,10 +11,10 @@
 #endif
 #include "multicast.h"
 
-int Mcast_ttl = 1;
+#define EF_TOS 0x2e // Expedited Forwarding type of service, widely used for VoIP (which all this is, sort of)
 
 // Set options on multicast socket
-static void soptions(int fd){
+static void soptions(int fd,int mcast_ttl){
   // Failures here are not fatal
 #if defined(linux)
   int freebind = 1;
@@ -27,20 +27,22 @@ static void soptions(int fd){
     perror("so_reuseport failed");
   if(setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse)) != 0)
     perror("so_reuseaddr failed");
+
   struct linger linger;
   linger.l_onoff = 0;
   linger.l_linger = 0;
   if(setsockopt(fd,SOL_SOCKET,SO_LINGER,&linger,sizeof(linger)) != 0)
     perror("so_linger failed");
-  u_char ttl = Mcast_ttl;
-  if(setsockopt(fd,IPPROTO_IP,IP_MULTICAST_TTL,&ttl,sizeof(ttl)) != 0){
+
+  u_char ttl = mcast_ttl;
+  if(setsockopt(fd,IPPROTO_IP,IP_MULTICAST_TTL,&ttl,sizeof(ttl)) != 0)
     perror("so_ttl failed");
-  }
+
   u_char loop = 1;
-  if(setsockopt(fd,IPPROTO_IP,IP_MULTICAST_LOOP,&loop,sizeof(loop)) != 0){
+  if(setsockopt(fd,IPPROTO_IP,IP_MULTICAST_LOOP,&loop,sizeof(loop)) != 0)
     perror("so_ttl failed");
-  }
-  int tos = 0x2e << 2; // EF (expedited forwarding)
+
+  int tos = EF_TOS << 2; // EF (expedited forwarding)
   setsockopt(fd,IPPROTO_IP,IP_TOS,&tos,sizeof(tos));
 }
 
@@ -53,6 +55,9 @@ static int join_group(int fd,struct addrinfo *resp){
   if(fd < 0)
     return -1;
 
+  // Ensure it's a multicast address
+  // Is this check really necessary?
+  // Maybe the setsockopt would just fail cleanly if it's not
   switch(sin->sin_family){
   case PF_INET:
     if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
@@ -67,7 +72,7 @@ static int join_group(int fd,struct addrinfo *resp){
   }
 
   struct group_req group_req;
-  group_req.gr_interface = 0; // Default interface
+  group_req.gr_interface = 0; // Default interface - should this be a parameter?
   memcpy(&group_req.gr_group,resp->ai_addr,resp->ai_addrlen);
   if(setsockopt(fd,IPPROTO_IP,MCAST_JOIN_GROUP,&group_req,sizeof(group_req)) != 0){
     perror("multicast join");
@@ -99,7 +104,7 @@ static int join_group(int fd,struct addrinfo *resp){
     if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
       return -1;
     ipv6_mreq.ipv6mr_multiaddr = sin6->sin6_addr;
-    ipv6_mreq.ipv6mr_interface = 0; // Default interface
+    ipv6_mreq.ipv6mr_interface = 0; // Default interface - should this be a parameter?
     if(setsockopt(fd,IPPROTO_IP,IPV6_JOIN_GROUP,&ipv6_mreq,sizeof(ipv6_mreq)) != 0){
       perror("multicast v6 join");
       return -1;
@@ -112,6 +117,7 @@ static int join_group(int fd,struct addrinfo *resp){
 }
 #endif
 
+// This is a bit messy. Is there a better way?
 char Default_mcast_port[] = "5004";
 char Default_rtcp_port[] = "5005";
 
@@ -120,9 +126,9 @@ char Default_rtcp_port[] = "5005";
 // Target is in the form of domain.name.com:5004 or 1.2.3.4:5004
 // when output = 1, connect to the multicast address so we can simply send() to it without specifying a destination
 // when output = 0, bind to it so we'll accept incoming packets
-// Add parameter 'rtcp' to port number; this will be 1 when sending RTCP messages
+// Add parameter 'offset' (normally 0) to port number; this will be 1 when sending RTCP messages
 // (Can we just do both?)
-int setup_mcast(char const *target,int output,int offset){
+int setup_mcast(char const *target,int output,int ttl,int offset){
   int len = strlen(target) + 1;  // Including terminal null
   char host[len],*port;
 
@@ -142,8 +148,7 @@ int setup_mcast(char const *target,int output,int offset){
 
   struct addrinfo *results = NULL;
   int ecode;
-  // Try a few times in case we come up before the resolver is quite ready
-
+  // Try a few times in case we come up before the resolver is quite ready (eg, on a systemd launch)
   for(int tries=0; tries < 10; tries++){
     //  fprintf(stderr,"Calling getaddrinfo(%s,%s)\n",host,port);
     if((ecode = getaddrinfo(host,port,&hints,&results)) == 0)
@@ -176,7 +181,7 @@ int setup_mcast(char const *target,int output,int offset){
       break;
     }
 
-    soptions(fd);
+    soptions(fd,ttl);
     if(output){
       // Try up to 10 times
       // this connect can fail with an unreachable when brought up quickly by systemd at boot
@@ -209,7 +214,7 @@ int setup_mcast(char const *target,int output,int offset){
   else
     fprintf(stderr,"setup_input: Can't create multicast socket for %s:%s\n",host,port);
 
-#if 0 // testing hack - find out if we're using source specific multicast (we're not)
+#if 0 // testing hack - find out if we're using source specific multicast (we're not, eventually we will)
   {
   uint32_t fmode  = MCAST_INCLUDE;
   uint32_t numsrc = 100;
@@ -294,13 +299,23 @@ unsigned char *hton_rtp(unsigned char *data, struct rtp_header *rtp){
 //           0            if packet is in sequence with no missing timestamps
 //         timestamp jump if packet is in sequence or <10 sequence numbers ahead, with missing timestamps
 int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
-  state->ssrc = rtp->ssrc; // Must be filtered elsewhere if you want it
-  state->packets++;
+  if(rtp->ssrc != state->ssrc){
+    // Normally this will happen only on the first packet in a session since
+    // the caller demuxes the SSRC to multiple instances.
+    // But a single-instance, interactive application like 'radio' lets the SSRC
+    // change so it doesn't have to restart when the stream sender does.
+    state->init = 0;
+    state->ssrc = rtp->ssrc; // Must be filtered elsewhere if you want it
+  }
   if(!state->init){
+    state->packets = 0;
     state->seq = rtp->seq;
     state->timestamp = rtp->timestamp;
+    state->dupes = 0;
+    state->drops = 0;
     state->init = 1;
   }
+  state->packets++;
   // Sequence number check
   short seq_step = (short)(rtp->seq - state->seq);
   if(seq_step != 0){
