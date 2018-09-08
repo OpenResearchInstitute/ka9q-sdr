@@ -9,7 +9,7 @@ usually needed to compile C programs (e.g., make, gcc).
 
 On Raspbian, Debian or Ubuntu Linux, run the following command (as root):
 
-apt install libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev libasound2-dev libncursesw5-dev libattr1-dev portaudio19-dev libhackrf-dev
+apt install libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev libasound2-dev libncurses5-dev libncursesw5-dev libattr1-dev portaudio19-dev libhackrf-dev
 
 Some versions of Ubuntu have an older version of libfftw3-dev that lacks full
 thread safety. The symptom here is the missing link-time symbol
@@ -27,7 +27,7 @@ line tools and the third-party 'macports' package, https://www.macports.org.
 
 Then run, as root:
 
-port install fftw-3 libopus portaudio hackrf-devel hackrf
+port install fftw-3 libopus portaudio hackrf-devel hackrf ncurses
 
 I haven't set up virgin systems to test the installs so I could easily have missed something. If so, please let me know.
 
