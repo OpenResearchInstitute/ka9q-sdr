@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.118 2018/09/05 08:19:38 karn Exp $
+# $Id: Makefile,v 1.119 2018/09/11 08:16:01 karn Exp $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 #COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
@@ -8,7 +8,7 @@ LDLIBS=-lpthread -lbsd -lm
 EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend radio pcmcat
 AFILES=bandplan.txt help.txt modes.txt
 SYSTEMD_FILES=funcube0.service funcube1.service hackrf0.service radio34.service radio39.service packet.service aprsfeed.service opus-hf.service opus-vhf.service opus-hackrf.service opus-uhf.service
-UDEV_FILES=66-hackrf.rules 69-funcube-ka9q.rules
+UDEV_FILES=66-hackrf.rules 68-funcube-dongle-proplus.rules 68-funcube-dongle.rules 69-funcube-ka9q.rules
 
 all: $(EXECS) $(AFILES) $(SYSTEMD_FILES) $(UDEV_FILES)
 
