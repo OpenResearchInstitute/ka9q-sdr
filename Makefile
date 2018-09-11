@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.118 2018/09/05 08:19:38 karn Exp karn $
+# $Id: Makefile,v 1.119 2018/09/11 08:16:01 karn Exp $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 #COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
