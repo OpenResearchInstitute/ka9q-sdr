@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.51 2018/09/08 06:06:21 karn Exp $
+// $Id: funcube.c,v 1.52 2018/10/05 05:33:04 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -737,10 +737,11 @@ double fcd_actual(unsigned int u32Freq){
 // Crude analog AGC just to keep signal roughly within A/D range
 // average energy (I+Q) in each sample, current block,
 void *agc(void *arg){
-  // Crank gains all the way down to start, bring up as necessary
-  FCD.status.mixer_gain = 0;
+  // Start with mixer & LNA on, IF at minimum
+  FCD.status.lna_gain = 24;
+  FCD.status.mixer_gain = 19;
   FCD.status.if_gain = 0;
-  FCD.status.lna_gain = 0;
+
   unsigned char val = 0;
   fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_LNA_GAIN,&val,sizeof(val));
   fcdAppSetParam(FCD.phd,FCD_CMD_APP_SET_MIXER_GAIN,&val,sizeof(val));
@@ -800,6 +801,8 @@ void *agc(void *arg){
 	FCD.status.lna_gain = 7;	
     }
     FCD.status.if_gain = newgain - FCD.status.lna_gain - FCD.status.mixer_gain;
+    if(FCD.status.if_gain >= 60)
+      FCD.status.if_gain = 59; // Limited to +59 dB 
 
     // Apply any changes
     if(old_lna_gain != FCD.status.lna_gain){
