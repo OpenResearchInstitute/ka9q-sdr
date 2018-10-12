@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.82 2018/09/08 06:06:21 karn Exp $
+// $Id: monitor.c,v 1.83 2018/10/12 00:21:13 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -345,9 +345,6 @@ void *sockproc(void *arg){
   }      
 }
 
-
-
-
 // Portaudio callback - transfer data (if any) to provided buffer
 static int pa_callback(const void *inputBuffer, void *outputBuffer,
 		       unsigned long framesPerBuffer,
@@ -359,12 +356,20 @@ static int pa_callback(const void *inputBuffer, void *outputBuffer,
   
   assert(framesPerBuffer < BUFFERSIZE/2); // Make sure ring buffer is big enough
   float *out = outputBuffer;
-  for(int n=0; n < framesPerBuffer; n++){
-    int rptr = Rptr++ & (BUFFERSIZE-1);
-    *out++ = Output_buffer[rptr][0];
-    *out++ = Output_buffer[rptr][1];
-    Output_buffer[rptr][0] = 0;
-    Output_buffer[rptr][1] = 0;
+  // First chunk - lesser of total amount needed or remainder of read buffer before wraparound
+  unsigned long rptr = Rptr & (BUFFERSIZE-1);
+  unsigned long chunk = min(framesPerBuffer,BUFFERSIZE-rptr);
+  Rptr += chunk;
+  memcpy(out,&Output_buffer[rptr][0],chunk * sizeof(Output_buffer[rptr]));
+  memset(&Output_buffer[rptr][0],0,chunk * sizeof(Output_buffer[rptr]));
+
+  framesPerBuffer -= chunk;
+  if(framesPerBuffer > 0){
+    // Second chunk, if wraparound
+    out += chunk * 2;
+    Rptr += framesPerBuffer;
+    memcpy(out,&Output_buffer[0][0],framesPerBuffer * sizeof(Output_buffer[rptr]));
+    memset(&Output_buffer[0][0],0,framesPerBuffer * sizeof(Output_buffer[rptr]));
   }
   return paContinue;
 }

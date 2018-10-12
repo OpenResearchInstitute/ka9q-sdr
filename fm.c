@@ -1,4 +1,4 @@
-// $Id: fm.c,v 1.54 2018/07/08 10:05:51 karn Exp $
+// $Id: fm.c,v 1.55 2018/10/12 00:20:25 karn Exp $
 // FM demodulation and squelch
 // Copyright 2018, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -107,7 +107,8 @@ void *demod_fm(void *arg){
     // Demodulated FM samples
     float samples[audio_master->ilen];
     // Start timer when SNR falls below threshold
-    if(demod->snr > 2) { // +3dB? +6dB?
+    int const thresh = 2;
+    if(demod->snr > thresh) { // +3dB? +6dB?
       snr_below_threshold = 0;
     } else {
       if(++snr_below_threshold > 1000)
@@ -120,6 +121,7 @@ void *demod_fm(void *arg){
       // 0.55 is empirical constant, 0.5 to 0.6 seems to sound good
       // Square amplitudes are compared to avoid sqrt inside loop
       float const min_ampl = 0.55 * 0.55 * avg_amp * avg_amp;
+      //     float const min_ampl = 0; // turn off experimentally
 
       // Actual FM demodulation
       float pdev_pos = 0;
@@ -153,6 +155,8 @@ void *demod_fm(void *arg){
 	demod->pdeviation = dsamprate * max(pdev_pos,-pdev_neg) * M_1_2PI;
       }
     } else {
+      state = 0;
+      lastaudio = 0;
       // Squelch is closed, send zeroes for a little while longer
       memset(samples,0,audio_master->ilen * sizeof(*samples));
       memset(audio_master->input.r,0,audio_master->ilen*sizeof(*audio_master->input.r));
