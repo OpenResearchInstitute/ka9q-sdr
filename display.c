@@ -1,4 +1,4 @@
-// $Id: display.c,v 1.136 2018/09/08 06:06:21 karn Exp $
+// $Id: display.c,v 1.137 2018/10/13 23:39:15 karn Exp $
 // Thread to display internal state of 'radio' and accept single-letter commands
 // Why are user interfaces always the biggest, ugliest and buggiest part of any program?
 // Copyright 2017 Phil Karn, KA9Q
@@ -1008,10 +1008,6 @@ void *display(void *arg){
 	  demod->flags |= SQUARE|PLL;
 	} else if(strcasecmp(str,"!square") == 0){	  
 	  demod->flags &= ~SQUARE;
-	} else if(strcasecmp(str,"cal") == 0){
-	  demod->flags |= CAL|PLL;
-	} else if(strcasecmp(str,"!cal") == 0){
-	  demod->flags &= ~CAL;
 	} else if(strcasecmp(str,"flat") == 0){
 	  demod->flags |= FLAT;
 	} else if(strcasecmp(str,"!flat") == 0){
@@ -1069,13 +1065,13 @@ void *display(void *arg){
 	if(demod->tunestep > 5)
 	  demod->tunestep = 5;
       } else if(wmouse_trafo(modes,&my,&mx,false)){
-	// In the options window?
+	// In the modes window?
 	my--;
 	if(my >= 0 && my < Nmodes){
 	  set_mode(demod,Modes[my].name,1);
 	}
       } else if(wmouse_trafo(options,&my,&mx,false)){
-	// In the modes window
+	// In the options window
 	switch(my){
 	case 1:
 	  demod->flags ^= ISB;
@@ -1084,19 +1080,14 @@ void *display(void *arg){
 	  demod->flags ^= PLL;
 	  break;
 	case 3:
-	  demod->flags ^= CAL;
-	  if(demod->flags & CAL)
-	    demod->flags |= PLL;
-	  break;
-	case 4:
 	  demod->flags ^= SQUARE;
 	  if(demod->flags & SQUARE)
 	    demod->flags |= PLL;
 	  break;
-	case 5:
+	case 4:
 	  demod->flags |= MONO;
 	  break;
-	case 6:
+	case 5:
 	  demod->flags &= ~MONO;
 	  break;
 	}

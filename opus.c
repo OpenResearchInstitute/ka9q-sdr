@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.25 2018/09/08 06:06:21 karn Exp $
+// $Id: opus.c,v 1.26 2018/10/13 23:39:47 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -245,6 +245,8 @@ int main(int argc,char * const argv[]){
     }
     sp->type = rtp_hdr.type;
     int samples_skipped = rtp_process(&sp->rtp_state_in,&rtp_hdr,frame_size);
+    if(samples_skipped < 0)
+      goto endloop; // Old dupe
     
     if(rtp_hdr.marker || samples_skipped > 4*Opus_frame_size){
       // reset encoder state after 4 frames of complete silence or a RTP marker bit

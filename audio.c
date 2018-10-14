@@ -1,4 +1,4 @@
-// $Id: audio.c,v 1.75 2018/10/12 00:20:17 karn Exp $
+// $Id: audio.c,v 1.76 2018/10/13 23:38:58 karn Exp $
 // Audio multicast routines for KA9Q SDR receiver
 // Handles linear 16-bit PCM, mono and stereo
 // Copyright 2017 Phil Karn, KA9Q
@@ -50,7 +50,7 @@ int send_stereo_audio(struct audio * const audio,float const * buffer,int size){
     }      
     // If packet is all zeroes, don't send it but still increase the timestamp
     rtp.timestamp = audio->rtp.timestamp;
-    rtp.timestamp += chunk/2; // Increase by sample count
+    audio->rtp.timestamp += chunk/2; // Increase by sample count
     if(not_silent){
       audio->rtp.bytes += sizeof(signed short) * chunk;
       audio->rtp.packets++;

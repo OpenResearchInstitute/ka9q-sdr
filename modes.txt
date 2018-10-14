@@ -25,21 +25,19 @@
 # bandwidth symmetric modes
 FM           FM         -8000          +8000          0        0 	       0	    0                     # standard NBFM (PM) -6dB/oct de-emphasis, PL removal
 FMF          FM         -8000          +8000          0	       0               0            0          flat       # pure FM, no post-detection filtering
-AM           AM         -5000          +5000          0      -50	      +50          0.1                    # standard AM envelope detection
-CAM	     LINEAR	-5000	       +5000	      0      -50              +50	   0.5	       pll mono   # Coherently track carrier (AM, low mod PM)
-# commented out -- not a good idea to automatically enter cal mode. Just hit the calibrate item
-#CAL	     LINEAR	-3000	       +3000	      0      -50              +50          0.5	       cal mono       # Calibrate on carrier (WWV, etc)
+AM           AM         -5000          +5000          0      -50	      +50          0.0                    # standard AM envelope detection
+CAM	     LINEAR	-5000	       +5000	      0      -50              +50	   0.0	       pll mono   # Coherently track carrier (AM, low mod PM)
 DSB	     LINEAR	-5000	       +5000          0      -50              +6           1.1         square mono    # Square to regenerate suppressed carrier
 IQ           LINEAR     -5000          +5000          0	     -50              +6           1.1                    # Left = I, Right = Q, no tracking
 ISB          LINEAR     -5000          +5000          0	     -50	      +6           1.1         conj 	  # add/subtract conjugates of +/- freqs
 CISB         LINEAR     -5000          +5000          0	     -50	      +6           1.1         pll conj 	  # is there such a thing?
 
 # Bandwidth asymmetric (SSB/VSB) modes
-CWU          LINEAR      -200           +200       +700      -50              +20	   0.5         mono 	  # dial freq is for +700 Hz tone
-CWL          LINEAR      -200           +200       -700      -50	      +20          0.5	       mono 	  # dial freq is for -700 Hz tone
+CWU          LINEAR      -200           +200       +700      -50              +20	   0.2         mono 	  # dial freq is for +700 Hz tone
+CWL          LINEAR      -200           +200       -700      -50	      +20          0.2	       mono 	  # dial freq is for -700 Hz tone
 USB          LINEAR      +100          +3000          0      -50	      +6           1.1	       mono
 LSB          LINEAR     -3000           -100          0      -50	      +6           1.1	       mono
-AME	     LINEAR	    0	       +3000          0      -50              +15          0.5         pll mono  # enhanced (full carrier) USB AM for CHU
+AME	     LINEAR	    0	       +3000          0      -50              +15          0.0         pll mono  # enhanced (full carrier) USB AM for CHU
 
 # stereo versions of above
 # puts Q channel on right ear
@@ -51,6 +49,5 @@ AME	     LINEAR	    0	       +3000          0      -50              +15         
 #USBS         LINEAR      +100          +3000          0      -50	      +6           1.1	       
 #LSBS         LINEAR     -3000           -100          0      -50	      +6           1.1	       
 #CAMS	     LINEAR	-5000	       +5000	      0      -50              +50	   0.5	       pll  # Coherently track carrier (AM, low mod PM)
-#CALS	     LINEAR	-3000	       +3000	      0      -50              +50          0.5	       cal       # Calibrate on carrier (WWV, etc)
 #DSBS	     LINEAR	-5000	       +5000          0      -50              +6           1.1         square    # Square to regenerate suppressed carrier
 #AMES	     LINEAR	 -100	       +3000          0      -50              +15          0.5         pll  # enhanced (full carrier) USB AM for CHU
