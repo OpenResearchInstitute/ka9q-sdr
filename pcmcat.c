@@ -1,4 +1,4 @@
-// $Id: pcmcat.c,v 1.7 2018/09/08 06:06:21 karn Exp $
+// $Id: pcmcat.c,v 1.8 2018/10/17 09:51:23 karn Exp $
 // Receive and stream PCM RTP data to stdout
 
 #define _GNU_SOURCE 1
@@ -36,8 +36,8 @@ float const Samprate = 48000;
 
 // Command line params
 char *Mcast_address_text;
-int Verbose;
-int Stereo;   // Force stereo output
+int Quiet;
+int Stereo;   // Force stereo output; otherwise output mono, downmixing if necessary
 
 int Input_fd = -1;
 struct pcmstream *Pcmstream;
@@ -52,13 +52,13 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,getenv("LANG"));
 
   int c;
-  while((c = getopt(argc,argv,"vhs:2")) != EOF){
+  while((c = getopt(argc,argv,"qhs:2")) != EOF){
     switch(c){
     case '2': // Force stereo
       Stereo++;
       break;
-    case 'v':
-      Verbose++;
+    case 'q':
+      Quiet++;
       break;
     case 's':
       Ssrc = strtol(optarg,NULL,0);
@@ -122,11 +122,10 @@ int main(int argc,char *argv[]){
       // Not found
       if(Sessions || (Ssrc !=0 && rtp.ssrc != Ssrc)){
 	// Only take specified SSRC or first SSRC for now
-	if(Verbose)
+	if(!Quiet)
 	  fprintf(stderr,"Ignoring new SSRC 0x%x\n",rtp.ssrc);
 	continue;
       }
-
       if((sp = make_session(&sender,rtp.ssrc,rtp.seq,rtp.timestamp)) == NULL){
 	fprintf(stderr,"No room for new session!!\n");
 	continue;
@@ -134,17 +133,25 @@ int main(int argc,char *argv[]){
       getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
 		  //		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM|NI_NUMERICHOST);
 		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
-      if(Verbose){
-	fprintf(stderr,"New session from %s:%s, type %d (%s), ssrc 0x%x\n",sp->addr,sp->port,rtp.type,
-		rtp.type == PCM_STEREO_PT ? "Stereo" : rtp.type == PCM_MONO_PT ? "Mono" : "??",
-		sp->ssrc);
-	if(rtp.type == PCM_STEREO_PT && !Stereo){
-	  fprintf(stderr,"Downmixing to mono\n");
-	} else if(rtp.type == PCM_MONO_PT && Stereo){
-	  fprintf(stderr,"Expanding to pseudo-stereo\n");
-	}
 
+      if(!Quiet){
+	fprintf(stderr,"New session from 0x%x@%s:%s, type %d",sp->ssrc,sp->addr,sp->port,rtp.type);
+
+	switch(rtp.type){
+	case PCM_STEREO_PT:
+	  fprintf(stderr,", pcm stereo");
+	  if(!Stereo)
+	    fprintf(stderr,", downmixing to mono");
+	  break;
+	case PCM_MONO_PT:
+	  fprintf(stderr,", pcm mono");
+	  if(Stereo)
+	    fprintf(stderr,", expanding to pseudo-stereo");	    
+	  break;
+	}
+	fprintf(stderr,"\n");
       }
+
       Sessions++;
     }
     int samples_skipped = rtp_process(&sp->rtp_state,&rtp,0); // get rid of last arg
@@ -163,15 +170,12 @@ int main(int argc,char *argv[]){
 	signed short left = ntohs(*sdp++);
 	signed short right = ntohs(*sdp++);
 	if(Stereo){
-	  putchar(left);
-	  putchar(left >> 8);
-	  putchar(right);
-	  putchar(right >> 8);
+	  fwrite(&left,sizeof(left),1,stdout);
+	  fwrite(&right,sizeof(right),1,stdout);
 	} else {
 	  // Downmix to mono
 	  signed short samp = (left + right) / 2;
-	  putchar(samp);
-	  putchar(samp >> 8);
+	  fwrite(&samp,sizeof(samp),1,stdout);
 	}
       }
       break;
@@ -180,13 +184,9 @@ int main(int argc,char *argv[]){
       while(samples-- > 0){
 	// Swap sample to host order, cat to stdout
 	signed short d = ntohs(*sdp++);
-	putchar(d);
-	putchar(d >> 8);
-	if(Stereo){
-	  // Force to pseudo-stereo
-	  putchar(d);
-	  putchar(d >> 8);
-	}
+	fwrite(&d,sizeof(d),1,stdout);
+	if(Stereo)
+	  fwrite(&d,sizeof(d),1,stdout);   // Force to pseudo-stereo
       }
       break;
     default:
