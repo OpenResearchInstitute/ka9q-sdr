@@ -1,4 +1,4 @@
-# $Id: hackrf0.service,v 1.5 2018/08/29 01:21:35 karn Exp $
+# $Id: hackrf0.service,v 1.8 2018/11/14 23:14:51 karn Exp $
 # Systemd service file for KA9Q's HackRF One daemon
 # Note - this is a rather compute intensive program
 # Phil Karn, KA9Q, Aug 2018
@@ -14,12 +14,14 @@ Requires=multi-user.target
 Nice=-10
 User=hackrf
 Group=plugdev
-Type=forking
+Type=simple
 PermissionsStartOnly=true
 RuntimeDirectory=hackrf0
 RuntimeDirectoryMode=0755
-ExecStart=/usr/local/bin/hackrf -d -I 0 -R iq.hackrf.mcast.local
+ExecStart=/usr/local/bin/hackrf -d -I 0 -R iq.hackrf.mcast.local,eth0
 PIDFile=/run/hackrf0/pid
+Restart=always
+RestartSec=1
 
 [Install]
 #WantedBy=multi-user.target

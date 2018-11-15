@@ -1,4 +1,4 @@
-// $Id: audio.c,v 1.76 2018/10/13 23:38:58 karn Exp $
+// $Id: audio.c,v 1.77 2018/11/14 23:09:29 karn Exp $
 // Audio multicast routines for KA9Q SDR receiver
 // Handles linear 16-bit PCM, mono and stereo
 // Copyright 2017 Phil Karn, KA9Q
@@ -152,7 +152,11 @@ int setup_audio(struct audio * const audio,int ttl){
     audio->rtp.ssrc = tt & 0xffffffff;
   }
   audio->audio_mcast_fd = setup_mcast(audio->audio_mcast_address_text,1,ttl,0);
+  if(audio->audio_mcast_fd == -1)
+    return -1;
   audio->rtcp_mcast_fd = setup_mcast(audio->audio_mcast_address_text,1,ttl,1);
+  if(audio->rtcp_mcast_fd == -1)
+    return -1;
 
   return 0;
 }

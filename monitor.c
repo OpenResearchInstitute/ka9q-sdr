@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.83 2018/10/12 00:21:13 karn Exp $
+// $Id: monitor.c,v 1.84 2018/11/11 21:50:43 karn Exp karn $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -688,10 +688,8 @@ void *display(void *arg){
     case 'r':
       // Reset playout queue
       Current->wptr = Rptr;
-      // Reset counters
-      Current->packets = 0;
-      Current->rtp_state.dupes = 0;
-      Current->rtp_state.drops = 0;
+      // Reset RTP state & counters
+      Current->rtp_state.init = 0;
       break;
     break;
     case 'd':

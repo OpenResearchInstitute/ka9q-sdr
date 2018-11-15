@@ -1,4 +1,4 @@
-// $Id: funcube.c,v 1.54 2018/10/12 00:21:45 karn Exp $
+// $Id: funcube.c,v 1.55 2018/11/14 23:10:33 karn Exp $
 // Read from AMSAT UK Funcube Pro and Pro+ dongles
 // Multicast raw 16-bit I/Q samples
 // Accept control commands from UDP socket
@@ -186,9 +186,6 @@ int main(int argc,char *argv[]){
   }
 
   if(Daemonize){
-
-    if(daemon(0,0) != 0)
-      exit(1);
 
     openlog("funcube",LOG_PID,LOG_DAEMON);
 #if 0 // Now handled by systemd
