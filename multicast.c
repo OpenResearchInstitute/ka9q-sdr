@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.33 2018/10/05 05:33:16 karn Exp $
+// $Id: multicast.c,v 1.34 2018/11/14 23:13:14 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -163,15 +163,7 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
   hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV | (!output ? AI_PASSIVE : 0);
 
   struct addrinfo *results = NULL;
-  int ecode;
-  // Try a few times in case we come up before the resolver is quite ready (eg, on a systemd launch)
-  for(int tries=0; tries < 10; tries++){
-    //  fprintf(stderr,"Calling getaddrinfo(%s,%s)\n",host,port);
-    if((ecode = getaddrinfo(host,port,&hints,&results)) == 0)
-      break;
-    sleep(2);
-  }    
-  //  fprintf(stderr,"getaddrinfo returns %d\n",ecode);
+  int ecode = getaddrinfo(host,port,&hints,&results);
   if(ecode != 0){
     fprintf(stderr,"setup_mcast getaddrinfo(%s,%s): %s\n",host,port,gai_strerror(ecode));
     return -1;
@@ -199,23 +191,15 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
 
     soptions(fd,ttl);
     if(output){
-      // Try up to 10 times
-      // this connect can fail with an unreachable when brought up quickly by systemd at boot
-      for(int tries=0; tries < 10; tries++){
-	if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	  goto done;
-	sleep(2);
-      }
+      if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	goto done;
     } else { // input
-      for(int tries=0; tries < 10; tries++){
-	if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	  goto done;
-	sleep(2);
-      }
+      if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	goto done;
     }
-    close(fd);
-    fd = -1;
   }
+  // All failed
+  fd = -1;
   done:;
   // Strictly speaking, it is not necessary to join a multicast group to which we only send.
   // But this creates a problem with brain-dead Netgear (and probably other) "smart" switches
