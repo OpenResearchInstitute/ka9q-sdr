@@ -1,4 +1,4 @@
-// $Id: hackrf.c,v 1.18 2018/12/05 07:08:01 karn Exp $
+// $Id: hackrf.c,v 1.17 2018/12/03 13:15:14 karn Exp karn $
 // Read from HackRF
 // Multicast raw 8-bit I/Q samples
 // Accept control commands from UDP socket
@@ -972,6 +972,10 @@ void *status(void *arg){
     encode_byte(&bp,LNA_GAIN,sdr->status.lna_gain);
     encode_byte(&bp,MIXER_GAIN,sdr->status.mixer_gain);
     encode_byte(&bp,IF_GAIN,sdr->status.if_gain);
+    encode_float(&bp,DC_I_OFFSET,crealf(sdr->DC));
+    encode_float(&bp,DC_Q_OFFSET,cimagf(sdr->DC));
+    encode_float(&bp,IQ_PHASE,sdr->sinphi);
+    encode_float(&bp,IQ_IMBALANCE,sdr->imbalance);
 
 
     // Filtering

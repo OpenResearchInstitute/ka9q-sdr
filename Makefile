@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.127 2018/12/05 07:09:09 karn Exp $
+# $Id: Makefile,v 1.127 2018/12/05 07:09:09 karn Exp karn $
 COPTS=-g -DNDEBUG=1 -O3 -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 #COPTS=-g -march=native -std=gnu11 -pthread -Wall -funsafe-math-optimizations
 CFLAGS=$(COPTS) $(INCLUDES)
@@ -80,8 +80,9 @@ libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o rtcp.o os
 # Main program objects
 aprs.o: aprs.c ax25.h multicast.h misc.h dsp.h
 aprsfeed.o: aprsfeed.c ax25.h multicast.h misc.h
+control.o: control.c radio.h osc.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h status.h
 funcube.o: funcube.c fcd.h fcdhidcmd.h hidapi.h sdr.h radio.h osc.h misc.h multicast.h status.h
-hackrf.o: hackrf.c sdr.h radio.h osc.h misc.h multicast.h decimate.h
+hackrf.o: hackrf.c sdr.h radio.h osc.h misc.h multicast.h decimate.h status.h
 iqplay.o: iqplay.c misc.h radio.h osc.h sdr.h multicast.h attr.h
 iqrecord.o: iqrecord.c radio.h osc.h sdr.h multicast.h attr.h
 modulate.o: modulate.c misc.h filter.h radio.h osc.h sdr.h
@@ -91,7 +92,7 @@ opussend.o: opussend.c misc.h multicast.h
 packet.o: packet.c filter.h misc.h multicast.h ax25.h dsp.h osc.h
 pcmcat.o: pcmcat.c multicast.h
 pcmsend.o: pcmsend.c misc.h multicast.h
-control.o: control.c radio.h osc.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h
+
 
 # Components of libfcd.a
 fcd.o: fcd.c fcd.h hidapi.h fcdhidcmd.h
