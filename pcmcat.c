@@ -1,4 +1,4 @@
-// $Id: pcmcat.c,v 1.8 2018/10/17 09:51:23 karn Exp $
+// $Id: pcmcat.c,v 1.9 2018/12/02 09:16:45 karn Exp $
 // Receive and stream PCM RTP data to stdout
 
 #define _GNU_SOURCE 1
@@ -77,7 +77,7 @@ int main(int argc,char *argv[]){
   Mcast_address_text = argv[optind];
 
   // Set up multicast input
-  Input_fd = setup_mcast(Mcast_address_text,0,0,0);
+  Input_fd = setup_mcast(Mcast_address_text,NULL,0,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input from %s\n",
 	    Mcast_address_text);

@@ -1,4 +1,4 @@
-// $Id: multicast.h,v 1.21 2018/09/08 06:06:21 karn Exp $
+// $Id: multicast.h,v 1.22 2018/12/02 09:16:45 karn Exp $
 // Multicast and RTP functions, constants and structures
 // Not every RTP module uses these yet, they need to be revised
 // Copyright 2018, Phil Karn, KA9Q
@@ -6,6 +6,8 @@
 #ifndef _MULTICAST_H
 #define _MULTICAST_H 1
 #include <stdint.h>
+#include <sys/socket.h>
+#include <netdb.h>
 #include <assert.h>
 
 #define NTP_EPOCH 2208988800UL // Seconds between Jan 1 1900 and Jan 1 1970
@@ -87,12 +89,21 @@ struct rtcp_sdes {
   char message[256];
 };
 
+// For caching back conversions of binary socket structures to printable addresses
+struct sockcache {
+       struct sockaddr_storage old_sockaddr;
+       char host[NI_MAXHOST];
+       char port[NI_MAXSERV];
+};
+
+
 // Convert between internal and wire representations of RTP header
 unsigned char *ntoh_rtp(struct rtp_header *,unsigned char *);
 unsigned char *hton_rtp(unsigned char *, struct rtp_header *);
 
-int setup_mcast(char const *target,int output,int ttl,int offset);
+int setup_mcast(char const *target,struct sockaddr *,int output,int ttl,int offset);
 extern char Default_mcast_port[];
+void update_sockcache(struct sockcache *sc,struct sockaddr *sa);
 
 // Function to process incoming RTP packet headers
 // Returns number of samples dropped or skipped by silence suppression, if any

@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.34 2018/11/14 23:13:14 karn Exp $
+// $Id: multicast.c,v 1.35 2018/12/02 09:16:45 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -140,7 +140,7 @@ char Default_rtcp_port[] = "5005";
 // when output = 0, bind to it so we'll accept incoming packets
 // Add parameter 'offset' (normally 0) to port number; this will be 1 when sending RTCP messages
 // (Can we just do both?)
-int setup_mcast(char const *target,int output,int ttl,int offset){
+int setup_mcast(char const *target,struct sockaddr *sock,int output,int ttl,int offset){
   int len = strlen(target) + 1;  // Including terminal null
   char host[len],*port,*iface;
 
@@ -192,15 +192,19 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
     soptions(fd,ttl);
     if(output){
       if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	goto done;
+	goto success;
     } else { // input
       if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	goto done;
+	goto success;
     }
   }
   // All failed
   fd = -1;
-  done:;
+  sock = NULL; // Don't save in case of error
+  success:;
+  if(sock)
+    memcpy(sock,resp->ai_addr,resp->ai_addrlen);
+
   // Strictly speaking, it is not necessary to join a multicast group to which we only send.
   // But this creates a problem with brain-dead Netgear (and probably other) "smart" switches
   // that do IGMP snooping. There's a setting to handle what happens with multicast groups
@@ -333,5 +337,29 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
 
   state->timestamp = rtp->timestamp + sampcnt;
   return time_step;
+}
+
+// For caching back conversions of binary socket structures to printable addresses
+void update_sockcache(struct sockcache *sc,struct sockaddr *sa){
+  int len;
+  switch(sa->sa_family){
+  case AF_INET:
+    len = sizeof(struct sockaddr_in);
+    break;
+  case AF_INET6:
+    len = sizeof(struct sockaddr_in6);
+    break;
+  default: // shouldn't happen
+    len = 0;
+    assert(0);
+    break;
+  }
+  if(memcmp(&sc->old_sockaddr,sa,len)){
+    memcpy(&sc->old_sockaddr,sa,len);
+    getnameinfo(sa,len,
+		sc->host,NI_MAXHOST,
+		sc->port,NI_MAXSERV,
+		NI_NOFQDN|NI_NUMERICHOST|NI_NUMERICSERV);
+  }
 }
 

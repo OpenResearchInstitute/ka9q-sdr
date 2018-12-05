@@ -1,4 +1,4 @@
-// $Id: am.c,v 1.34 2018/07/08 10:05:51 karn Exp $
+// $Id: am.c,v 1.39 2018/12/05 07:08:01 karn Exp $
 // AM envelope demodulator thread for 'radio'
 // Copyright Oct 9 2017, Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -16,41 +16,37 @@ void *demod_am(void *arg){
   pthread_setname("am");
   assert(arg != NULL);
   struct demod * const demod = arg;
-  struct audio * const audio = &Audio; // Eventually pass this as an argument
 
   // Set derived (and other) constants
-  float const samptime = demod->decimate / demod->samprate;  // Time between (decimated) samples
+  float const samptime = demod->filter.decimate / (float)demod->input.samprate;  // Time between (decimated) samples
 
   // AGC
   // I originally just kept the carrier at constant amplitude
   // but this fails when selective fading takes out the carrier, resulting in loud, distorted audio
   int hangcount = 0;
-  float const recovery_factor = dB2voltage(demod->recovery_rate * samptime); // AGC ramp-up rate/sample
-  //  float const attack_factor = dB2voltage(demod->attack_rate * samptime);      // AGC ramp-down rate/sample
-  int const hangmax = demod->hangtime / samptime; // samples before AGC increase
-  if(isnan(demod->gain))
-    demod->gain = dB2voltage(20.);
+  float const recovery_factor = dB2voltage(demod->agc.recovery_rate * samptime); // AGC ramp-up rate/sample
+  //  float const attack_factor = dB2voltage(demod->agc.attack_rate * samptime);      // AGC ramp-down rate/sample
+  int const hangmax = demod->agc.hangtime / samptime; // samples before AGC increase
+  demod->agc.gain = dB2voltage(80.); // Empirical
 
   // DC removal from envelope-detected AM and coherent AM
   float DC_filter = 0;
   float const DC_filter_coeff = .0001;
 
-  demod->flags |= MONO; // Implies mono
-
-  demod->snr = -INFINITY; // Not used
+  demod->output.channels = 1; // Mono
 
   // Detection filter
-  struct filter_out * const filter = create_filter_output(demod->filter_in,NULL,demod->decimate,COMPLEX);
-  demod->filter_out = filter;
-  set_filter(filter,demod->samprate/demod->decimate,demod->low,demod->high,demod->kaiser_beta);
+  struct filter_out * const filter = create_filter_output(demod->filter.in,NULL,demod->filter.decimate,COMPLEX);
+  demod->filter.out = filter;
+  set_filter(filter,samptime*demod->filter.low,samptime*demod->filter.high,demod->filter.kaiser_beta);
 
   while(!demod->terminate){
     // New samples
     execute_filter_output(filter);    
-    if(!isnan(demod->n0))
-      demod->n0 += .001 * (compute_n0(demod) - demod->n0); // Update noise estimate
+    if(!isnan(demod->sig.n0))
+      demod->sig.n0 += .001 * (compute_n0(demod) - demod->sig.n0); // Update noise estimate
     else
-      demod->n0 = compute_n0(demod); // Happens at startup
+      demod->sig.n0 = compute_n0(demod); // Happens at startup
 
     // AM envelope detector
     float signal = 0;
@@ -65,23 +61,23 @@ void *demod_am(void *arg){
       // DC_filter will always be positive since sqrtf() is positive
       DC_filter += DC_filter_coeff * (samp - DC_filter);
       
-      if(isnan(demod->gain)){
-	demod->gain = demod->headroom / DC_filter;
-      } else if(demod->gain * DC_filter > demod->headroom){
-	demod->gain = demod->headroom / DC_filter;
+      if(isnan(demod->agc.gain)){
+	demod->agc.gain = demod->agc.headroom / DC_filter;
+      } else if(demod->agc.gain * DC_filter > demod->agc.headroom){
+	demod->agc.gain = demod->agc.headroom / DC_filter;
 	hangcount = hangmax;
       } else if(hangcount != 0){
 	hangcount--;
       } else {
-	demod->gain *= recovery_factor;
+	demod->agc.gain *= recovery_factor;
       }
-      samples[n] = (samp - DC_filter) * demod->gain;
+      samples[n] = (samp - DC_filter) * demod->agc.gain;
     }
-    send_mono_audio(audio,samples,filter->olen);
+    send_mono_output(demod,samples,filter->olen);
     // Scale to each sample so baseband power will display correctly
-    demod->bb_power = (signal + noise) / (2*filter->olen);
+    demod->sig.bb_power = (signal + noise) / (2*filter->olen);
   } // terminate
   delete_filter_output(filter);
-  demod->filter_out = NULL;
+  demod->filter.out = NULL;
   pthread_exit(NULL);
 }

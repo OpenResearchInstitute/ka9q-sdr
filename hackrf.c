@@ -1,4 +1,4 @@
-// $Id: hackrf.c,v 1.14 2018/11/14 23:12:47 karn Exp $
+// $Id: hackrf.c,v 1.18 2018/12/05 07:08:01 karn Exp $
 // Read from HackRF
 // Multicast raw 8-bit I/Q samples
 // Accept control commands from UDP socket
@@ -30,14 +30,15 @@
 #include "misc.h"
 #include "multicast.h"
 #include "decimate.h"
+#include "status.h"
 
 
 struct sdrstate {
   hackrf_device *device;
   struct status status;     // Frequency and gain settings, grouped for transmission in RTP packet
 
-  float in_power;              // Running estimate of unfiltered A/D signal power
-  float out_power;             // Filtered output power
+  float in_power;           // Running estimate of unfiltered A/D signal power
+  float out_power;          // Filtered output power
   
   int clips;                // Sample clips since last reset
 
@@ -45,6 +46,10 @@ struct sdrstate {
   complex float DC;      // DC offset
   float sinphi;          // I/Q phase error
   float imbalance;       // Ratio of I power to Q power
+  double calibration;
+  uint64_t intfreq;
+  
+
 };
 
 
@@ -64,6 +69,7 @@ int Offset=1;     // Default to offset high by +Fs/4 downconvert in software to 
 int Daemonize = 0;
 int Mcast_ttl = 1; // Don't send fast IQ streams beyond the local network by default
 char *Rundir = "/run/hackrf"; // Where 'status' and 'pid' get written
+char *Dest = "239.1.6.1"; // Default for testing
 
 float const DC_alpha = 1.0e-7;  // high pass filter coefficient for DC offset estimates, per sample
 float const Power_alpha= 1.0; // time constant (seconds) for smoothing power and I/Q imbalance estimates
@@ -77,18 +83,18 @@ char *Locale;
 pthread_t Display_thread;
 pthread_t Process_thread;
 pthread_t AGC_thread;
+pthread_t Status_thread;
 int Rtp_sock; // Socket handle for sending real time stream *and* receiving commands
-int Ctl_sock;
-
+int Status_sock;
+struct sockaddr_storage Output_dest_address;
 struct rtp_state Rtp;
-
 complex float Sampbuffer[BUFFERSIZE];
 int Samp_wp;
 int Samp_rp;
 FILE *Status;
 char *Status_filename;
 char *Pid_filename;
-
+uint64_t Commands;
 pthread_mutex_t Buf_mutex;
 pthread_cond_t Buf_cond;
 
@@ -352,7 +358,8 @@ int main(int argc,char *argv[]){
     errmsg("seteuid: %s",strerror(errno));
 #endif
 
-  char *dest = "239.1.6.1"; // Default for testing
+  struct sdrstate *sdr = &HackCD;
+
 
   Locale = getenv("LANG");
   if(Locale == NULL || strlen(Locale) == 0)
@@ -372,7 +379,7 @@ int main(int argc,char *argv[]){
       Out_samprate = strtol(optarg,NULL,0);
       break;
     case 'R':
-      dest = optarg;
+      Dest = optarg;
       break;
     case 'D':
       Decimate = strtol(optarg,NULL,0);
@@ -464,27 +471,14 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,Locale);
   
   // Set up RTP output socket
-  Rtp_sock = setup_mcast(dest,1,Mcast_ttl,0);
+  Rtp_sock = setup_mcast(Dest,NULL,1,Mcast_ttl,0);
   if(Rtp_sock == -1){
     errmsg("Can't create multicast socket: %s",strerror(errno));
     exit(1);
   }
     
-  // Set up control socket
-  Ctl_sock = socket(AF_INET,SOCK_DGRAM,0);
-
-  // bind control socket to next sequential port after our multicast source port
-  struct sockaddr_in ctl_sockaddr;
-  socklen_t siz = sizeof(ctl_sockaddr);
-  if(getsockname(Rtp_sock,(struct sockaddr *)&ctl_sockaddr,&siz) == -1){
-    errmsg("getsockname on ctl port: %s",strerror(errno));
-    exit(1);
-  }
-  struct sockaddr_in locsock;
-  locsock.sin_family = AF_INET;
-  locsock.sin_port = htons(ntohs(ctl_sockaddr.sin_port)+1);
-  locsock.sin_addr.s_addr = INADDR_ANY;
-  bind(Ctl_sock,(struct sockaddr *)&locsock,sizeof(locsock));
+  // Set up new control socket on port 5006
+  int Nctl_sock = setup_mcast(Dest,NULL,0,Mcast_ttl,2); // For input
 
   int ret;
   if((ret = hackrf_init()) != HACKRF_SUCCESS){
@@ -494,38 +488,38 @@ int main(int argc,char *argv[]){
   // Enumerate devices
   hackrf_device_list_t *dlist = hackrf_device_list();
 
-  if((ret = hackrf_device_list_open(dlist,Device,&HackCD.device)) != HACKRF_SUCCESS){
+  if((ret = hackrf_device_list_open(dlist,Device,&sdr->device)) != HACKRF_SUCCESS){
     errmsg("hackrf_open(%d) failed: %s\n",Device,hackrf_error_name(ret));
     exit(1);
   }
   hackrf_device_list_free(dlist); dlist = NULL;
 
-  ret = hackrf_set_sample_rate(HackCD.device,(double)ADC_samprate);
+  ret = hackrf_set_sample_rate(sdr->device,(double)ADC_samprate);
   assert(ret == HACKRF_SUCCESS);
-  HackCD.status.samprate = Out_samprate;
+  sdr->status.samprate = Out_samprate;
 
   uint32_t bw = hackrf_compute_baseband_filter_bw_round_down_lt(ADC_samprate);
-  ret = hackrf_set_baseband_filter_bandwidth(HackCD.device,bw);
+  ret = hackrf_set_baseband_filter_bandwidth(sdr->device,bw);
   assert(ret == HACKRF_SUCCESS);
 
   // NOTE: what we call mixer gain, they call lna gain
   // What we call lna gain, they call antenna enable
-  HackCD.status.lna_gain = 14;
-  HackCD.status.mixer_gain = 24;
-  HackCD.status.if_gain = 20;
+  sdr->status.lna_gain = 14;
+  sdr->status.mixer_gain = 24;
+  sdr->status.if_gain = 20;
 
-  ret = hackrf_set_antenna_enable(HackCD.device,HackCD.status.lna_gain ? 1 : 0);
+  ret = hackrf_set_antenna_enable(sdr->device,sdr->status.lna_gain ? 1 : 0);
   assert(ret == HACKRF_SUCCESS);
-  ret = hackrf_set_lna_gain(HackCD.device,HackCD.status.mixer_gain);
+  ret = hackrf_set_lna_gain(sdr->device,sdr->status.mixer_gain);
   assert(ret == HACKRF_SUCCESS);
-  ret = hackrf_set_vga_gain(HackCD.device,HackCD.status.if_gain);
+  ret = hackrf_set_vga_gain(sdr->device,sdr->status.if_gain);
   assert(ret == HACKRF_SUCCESS);
 
-  uint64_t intfreq = HackCD.status.frequency = 146000000;
+  uint64_t intfreq = sdr->status.frequency = 146000000;
   
   intfreq += Offset * ADC_samprate / 4; // Offset tune high by +Fs/4
 
-  ret = hackrf_set_freq(HackCD.device,intfreq);
+  ret = hackrf_set_freq(sdr->device,intfreq);
   assert(ret == HACKRF_SUCCESS);
 
   pthread_mutex_init(&Buf_mutex,NULL);
@@ -537,21 +531,22 @@ int main(int argc,char *argv[]){
   struct timeval tp;
   gettimeofday(&tp,NULL);
   // Timestamp is in nanoseconds for futureproofing, but time of day is only available in microsec
-  HackCD.status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
+  sdr->status.timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
 
   if(Rtp.ssrc == 0)
     Rtp.ssrc = tt & 0xffffffff; // low 32 bits of clock time
-  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,dest,Blocksize,Rtp.ssrc,Status_filename);
+  errmsg("uid %d; device %d; dest %s; blocksize %d; RTP SSRC %lx; status file %s\n",getuid(),Device,Dest,Blocksize,Rtp.ssrc,Status_filename);
   errmsg("A/D sample rate %'d Hz; decimation ratio %d; output sample rate %'d Hz; Offset %'+d\n",
 	 ADC_samprate,Decimate,Out_samprate,Offset * ADC_samprate/4);
 
-  pthread_create(&Process_thread,NULL,process,NULL);
+  pthread_create(&Process_thread,NULL,process,&HackCD);
 
-  ret = hackrf_start_rx(HackCD.device,rx_callback,&HackCD);
+  ret = hackrf_start_rx(sdr->device,rx_callback,&HackCD);
   assert(ret == HACKRF_SUCCESS);
 
-  pthread_create(&AGC_thread,NULL,agc,NULL);
+  pthread_create(&AGC_thread,NULL,agc,&HackCD);
 
+  pthread_create(&Status_thread,NULL,status,&HackCD);
   signal(SIGPIPE,SIG_IGN);
   signal(SIGINT,closedown);
   signal(SIGKILL,closedown);
@@ -559,7 +554,7 @@ int main(int argc,char *argv[]){
   signal(SIGTERM,closedown);        
   
   if(Status)
-    pthread_create(&Display_thread,NULL,display,NULL);
+    pthread_create(&Display_thread,NULL,display,&HackCD);
 
 
   // Process commands to change hackrf state
@@ -567,50 +562,73 @@ int main(int argc,char *argv[]){
   pthread_setname("hackrf-cmd");
 
   while(1){
-
-    fd_set fdset;
-    socklen_t addrlen;
-    int ret;
-    struct timeval timeout;
-    struct status requested_status;
-    
-    // Read with a timeout - necessary?
-    FD_ZERO(&fdset);
-    FD_SET(Ctl_sock,&fdset);
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    ret = select(Ctl_sock+1,&fdset,NULL,NULL,&timeout);
-    if(ret == -1){
-      errmsg("select");
-      usleep(50000); // don't loop tightly
+    unsigned char buffer[8192];
+    memset(buffer,0,sizeof(buffer));
+    int length = recv(Nctl_sock,buffer,sizeof(buffer),0);
+    if(length <= 0){
+      sleep(1);
       continue;
     }
-    if(ret == 0)
-      continue;
+    // Parse entries
+    unsigned char *cp = buffer;
 
-    // A command arrived, read it
-    // Should probably log these
-    struct sockaddr_in6 command_address;
-    addrlen = sizeof(command_address);
-    if((ret = recvfrom(Ctl_sock,&requested_status,sizeof(requested_status),0,(struct sockaddr *)&command_address,&addrlen)) <= 0){
-      if(ret < 0)
-	errmsg("recv");
-      usleep(50000); // don't loop tightly
-      continue;
-    }
-    
-    if(ret < sizeof(requested_status))
-      continue; // Too short; ignore
-    
-    uint64_t intfreq = HackCD.status.frequency = requested_status.frequency;
-    intfreq += Offset * ADC_samprate/4; // Offset tune by +Fs/4
+    int cr = *cp++; // Command/response
+    if(cr == 0)
+      continue; // Ignore our own status messages
 
-    ret = hackrf_set_freq(HackCD.device,intfreq);
-    assert(ret == HACKRF_SUCCESS);
+    Commands++;
+    
+    // Parse commands
+    while(cp - buffer < length){
+      enum status_type type = *cp++; // increment cp to length field
+    
+      if(type == EOL)
+	break; // End of list
+
+      unsigned int optlen = *cp++;
+      if(cp - buffer + optlen >= length)
+	break; // Invalid length
+
+      switch(type){
+      case EOL: // Shouldn't get here
+	break;
+      case CALIBRATE:
+	sdr->calibration = decode_double(cp,optlen);
+	break;
+      case RADIO_FREQUENCY:
+	sdr->status.frequency = decode_double(cp,optlen);
+	uint64_t intfreq = sdr->status.frequency;
+	intfreq += Offset * ADC_samprate/4; // Offset tune by +Fs/4
+	ret = hackrf_set_freq(sdr->device,intfreq);
+	assert(ret == HACKRF_SUCCESS);
+
+	sdr->status.frequency = round(sdr->status.frequency/ (1 + sdr->calibration));
+	// LNA gain is frequency-dependent
+	if(sdr->status.lna_gain){
+	  if(sdr->intfreq >= 420e6)
+	    sdr->status.lna_gain = 7;
+	  else
+	    sdr->status.lna_gain = 24;
+	}
+	break;
+      case LNA_GAIN:	// Fill this in later
+	sdr->status.lna_gain = decode_int(cp,optlen);
+	break;
+      case MIXER_GAIN:	// Fill this in later
+	sdr->status.mixer_gain = decode_int(cp,optlen);
+	break;
+      case IF_GAIN:	// Fill this in later
+	sdr->status.if_gain = decode_int(cp,optlen);
+	break;
+      default: // Ignore all others
+	break;
+      }
+      cp += optlen;
+    }    
   }
   // Can't really get here
   close(Rtp_sock);
-  hackrf_close(HackCD.device);
+  hackrf_close(sdr->device);
   hackrf_exit();
   exit(0);
 }
@@ -619,6 +637,9 @@ int main(int argc,char *argv[]){
 
 // Status display thread
 void *display(void *arg){
+  assert(arg != NULL);
+  struct sdrstate *sdr = (struct sdrstate *)arg;
+
   pthread_setname("hackrf-disp");
 
   fprintf(Status,"               |---Gains dB---|      |----Levels dB --|   |---------Errors---------|           clips\n");
@@ -630,24 +651,24 @@ void *display(void *arg){
   char   eol = stat_point == -1 ? '\r' : '\n';
   while(1){
 
-    float powerdB = 10*log10f(HackCD.in_power);
+    float powerdB = 10*log10f(sdr->in_power);
 
     if(stat_point != -1)
       fseeko(Status,stat_point,SEEK_SET);
     
     fprintf(Status,"%'-15.0lf%3d%7d%6d%'12.1f%'6.1f%'6.1f%9.4f%7.4f%7.2f%6.2f%'16d    %c",
-	    HackCD.status.frequency,
-	    HackCD.status.lna_gain,	    
-	    HackCD.status.mixer_gain,
-	    HackCD.status.if_gain,
-	    powerdB - (HackCD.status.lna_gain + HackCD.status.mixer_gain + HackCD.status.if_gain),
+	    sdr->status.frequency,
+	    sdr->status.lna_gain,	    
+	    sdr->status.mixer_gain,
+	    sdr->status.if_gain,
+	    powerdB - (sdr->status.lna_gain + sdr->status.mixer_gain + sdr->status.if_gain),
 	    powerdB,
-	    10*log10f(HackCD.out_power),
-	    crealf(HackCD.DC),
-	    cimagf(HackCD.DC),
-	    (180/M_PI) * asin(HackCD.sinphi),
-	    10*log10(HackCD.imbalance),
-	    HackCD.clips,
+	    10*log10f(sdr->out_power),
+	    crealf(sdr->DC),
+	    cimagf(sdr->DC),
+	    (180/M_PI) * asin(sdr->sinphi),
+	    10*log10(sdr->imbalance),
+	    sdr->clips,
 	    eol);
     fflush(Status);
     usleep(100000); // 10 Hz
@@ -656,9 +677,14 @@ void *display(void *arg){
 }
 
 void *agc(void *arg){
+  assert(arg != NULL);
+  struct sdrstate *sdr = (struct sdrstate *)arg;
+    
+
+  pthread_setname("hackrf-agc");
   while(1){
     usleep(100000);
-    float powerdB = 10*log10f(HackCD.in_power);
+    float powerdB = 10*log10f(sdr->in_power);
     int change;
     if(powerdB > Upper_limit)
       change = Upper_limit - powerdB;
@@ -670,52 +696,52 @@ void *agc(void *arg){
     int ret __attribute__((unused)) = HACKRF_SUCCESS; // Won't be used when asserts are disabled
     if(change > 0){
       // Increase gain, LNA first, then mixer, and finally IF
-      if(change >= 14 && HackCD.status.lna_gain < 14){
-	HackCD.status.lna_gain = 14;
+      if(change >= 14 && sdr->status.lna_gain < 14){
+	sdr->status.lna_gain = 14;
 	change -= 14;
-	ret = hackrf_set_antenna_enable(HackCD.device,HackCD.status.lna_gain ? 1 : 0);
+	ret = hackrf_set_antenna_enable(sdr->device,sdr->status.lna_gain ? 1 : 0);
 	assert(ret == HACKRF_SUCCESS);
       }
-      int old_mixer_gain = HackCD.status.mixer_gain;
+      int old_mixer_gain = sdr->status.mixer_gain;
       int new_mixer_gain = min(40,old_mixer_gain + 8*(change/8));
       if(new_mixer_gain != old_mixer_gain){
-	HackCD.status.mixer_gain = new_mixer_gain;
+	sdr->status.mixer_gain = new_mixer_gain;
 	change -= new_mixer_gain - old_mixer_gain;
-	ret = hackrf_set_lna_gain(HackCD.device,HackCD.status.mixer_gain);
+	ret = hackrf_set_lna_gain(sdr->device,sdr->status.mixer_gain);
 	assert(ret == HACKRF_SUCCESS);
       }
-      int old_if_gain = HackCD.status.if_gain;
+      int old_if_gain = sdr->status.if_gain;
       int new_if_gain = min(62,old_if_gain + 2*(change/2));
       if(new_if_gain != old_if_gain){
-	HackCD.status.if_gain = new_if_gain;
+	sdr->status.if_gain = new_if_gain;
 	change -= new_if_gain - old_if_gain;
-	ret = hackrf_set_vga_gain(HackCD.device,HackCD.status.if_gain);
+	ret = hackrf_set_vga_gain(sdr->device,sdr->status.if_gain);
 	assert(ret == HACKRF_SUCCESS);
       }
     } else if(change < 0){
       // Reduce gain (IF first), start counter
-      int old_if_gain = HackCD.status.if_gain;
+      int old_if_gain = sdr->status.if_gain;
       int new_if_gain = max(0,old_if_gain + 2*(change/2));
       if(new_if_gain != old_if_gain){
-	HackCD.status.if_gain = new_if_gain;
+	sdr->status.if_gain = new_if_gain;
 	change -= new_if_gain - old_if_gain;
-	ret = hackrf_set_vga_gain(HackCD.device,HackCD.status.if_gain);
+	ret = hackrf_set_vga_gain(sdr->device,sdr->status.if_gain);
 	assert(ret == HACKRF_SUCCESS);
       }
-      int old_mixer_gain = HackCD.status.mixer_gain;
+      int old_mixer_gain = sdr->status.mixer_gain;
       int new_mixer_gain = max(0,old_mixer_gain + 8*(change/8));
       if(new_mixer_gain != old_mixer_gain){
-	HackCD.status.mixer_gain = new_mixer_gain;
+	sdr->status.mixer_gain = new_mixer_gain;
 	change -= new_mixer_gain - old_mixer_gain;
-	ret = hackrf_set_lna_gain(HackCD.device,HackCD.status.mixer_gain);
+	ret = hackrf_set_lna_gain(sdr->device,sdr->status.mixer_gain);
 	assert(ret == HACKRF_SUCCESS);
       }
-      int old_lna_gain = HackCD.status.lna_gain;
+      int old_lna_gain = sdr->status.lna_gain;
       int new_lna_gain = max(0,old_lna_gain + 14*(change/14));
       if(new_lna_gain != old_lna_gain){
-	HackCD.status.lna_gain = new_lna_gain;
+	sdr->status.lna_gain = new_lna_gain;
 	change -= new_lna_gain - old_lna_gain;
-	ret = hackrf_set_antenna_enable(HackCD.device,HackCD.status.lna_gain ? 1 : 0);
+	ret = hackrf_set_antenna_enable(sdr->device,sdr->status.lna_gain ? 1 : 0);
 	assert(ret == HACKRF_SUCCESS);
       }
     }
@@ -875,3 +901,95 @@ bool set_freq(const uint64_t freq)
 }
 
 #endif
+
+
+struct state State[256];
+
+// Thread to periodically transmit receiver state
+void *status(void *arg){
+  pthread_setname("hackrf-status");
+  assert(arg != NULL);
+  struct sdrstate * const sdr = arg;
+
+  memset(State,0,sizeof(State));
+  
+  // Set up status socket on port 5006
+  Status_sock = setup_mcast(Dest,(struct sockaddr *)&Output_dest_address,1,Mcast_ttl,2);
+
+  for(int count=0;;count++){
+    if(Status_sock <= 0)
+      return NULL; // Nothing we can do, so quit
+
+    // emit status packets indefinitely
+    unsigned char packet[2048],*bp;
+    memset(packet,0,sizeof(packet));
+    bp = packet;
+
+    *bp++ = 0;   // Command/response = response
+
+    struct timeval tp;
+    gettimeofday(&tp,NULL);
+    // Timestamp is in nanoseconds for futureproofing, but time of day is only available in microsec
+    long long timestamp = ((tp.tv_sec - UNIX_EPOCH + GPS_UTC_OFFSET) * 1000000LL + tp.tv_usec) * 1000LL;
+    encode_int64(&bp,GPS_TIME,timestamp);
+    encode_int64(&bp,COMMANDS,Commands);
+    // Where we're sending output
+    {
+      struct sockaddr_in *sin;
+      struct sockaddr_in6 *sin6;
+      *bp++ = OUTPUT_DEST_SOCKET;
+      switch(Output_dest_address.ss_family){
+      case AF_INET:
+	sin = (struct sockaddr_in *)&Output_dest_address;
+	*bp++ = 6;
+	memcpy(bp,&sin->sin_addr.s_addr,4); // Already in network order
+	bp += 4;
+	memcpy(bp,&sin->sin_port,2);
+	bp += 2;
+	break;
+      case AF_INET6:
+	sin6 = (struct sockaddr_in6 *)&Output_dest_address;
+	*bp++ = 10;
+	memcpy(bp,&sin6->sin6_addr,8);
+	bp += 8;
+	memcpy(bp,&sin6->sin6_port,2);
+	bp += 2;
+	break;
+      default:
+	break;
+      }
+    }
+    encode_int32(&bp,OUTPUT_SSRC,Rtp.ssrc);
+    encode_byte(&bp,OUTPUT_TTL,Mcast_ttl);
+    encode_int32(&bp,OUTPUT_SAMPRATE,Out_samprate);
+    encode_int64(&bp,OUTPUT_PACKETS,Rtp.packets);
+
+    // Tuning
+    encode_double(&bp,RADIO_FREQUENCY,sdr->status.frequency);
+    encode_double(&bp,CALIBRATE,sdr->calibration);
+
+    // Front end
+    encode_byte(&bp,LNA_GAIN,sdr->status.lna_gain);
+    encode_byte(&bp,MIXER_GAIN,sdr->status.mixer_gain);
+    encode_byte(&bp,IF_GAIN,sdr->status.if_gain);
+
+
+    // Filtering
+    encode_float(&bp,LOW_EDGE,-90e3);
+    encode_float(&bp,HIGH_EDGE,+90e3);
+
+    // Signals - these ALWAYS change
+    encode_float(&bp,BASEBAND_POWER,sdr->in_power);
+
+    // Demodulation mode
+    enum demod_type demod_type = LINEAR_DEMOD; // actually LINEAR_MODE
+    encode_byte(&bp,DEMOD_MODE,demod_type);
+    encode_int32(&bp,OUTPUT_CHANNELS,2);
+
+    encode_eol(&bp);
+
+    int len = compact_packet(&State[0],packet,(count % 10) == 0);
+    send(Status_sock,packet,len,0);
+    usleep(100000);
+  }
+}

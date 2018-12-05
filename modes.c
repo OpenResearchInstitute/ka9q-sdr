@@ -1,4 +1,4 @@
-// $Id: modes.c,v 1.26 2018/07/06 06:06:12 karn Exp $
+// $Id: modes.c,v 1.29 2018/12/02 09:16:45 karn Exp $
 // Load and search mode definition table in /usr/local/share/ka9q-radio/modes.txt
 
 // Copyright 2018, Phil Karn, KA9Q
@@ -13,11 +13,8 @@
 #endif
 #include <string.h>
 
-
 #include "misc.h"
 #include "radio.h"
-
-
 
 #define MAXMODES 256
 struct modetab Modes[MAXMODES];
@@ -25,17 +22,12 @@ int Nmodes;
 
 extern char Libdir[];
 
-// Linkage table from ascii names to demodulator routines
-struct demodtab {
-  char name[16];
-  void * (*demod)(void *);
-} Demodtab[] = {
-  {"AM",     demod_am},  // AM evelope detection
-  {"FM",     demod_fm},  // NBFM and noncoherent PM
-  {"Linear", demod_linear}, // Coherent demodulation of AM, DSB, BPSK; calibration on WWV/WWVH/CHU carrier
+struct demodtab Demodtab[] = {
+      {LINEAR_DEMOD, "Linear", demod_linear}, // Coherent demodulation of AM, DSB, BPSK; calibration on WWV/WWVH/CHU carrier
+      {AM_DEMOD,     "AM",     demod_am},     // AM evelope detection
+      {FM_DEMOD,     "FM",     demod_fm},     // NBFM and noncoherent PM
 };
-#define NDEMOD (sizeof(Demodtab)/sizeof(struct demodtab))
-
+int Ndemod = sizeof(Demodtab)/sizeof(struct demodtab);
 
 int readmodes(char *file){
   char pathname[PATH_MAX];
@@ -53,52 +45,54 @@ int readmodes(char *file){
     if(cp != NULL)
       *cp = '\0';
 
-    struct modetab *mp = &Modes[Nmodes];
+    struct modetab *mtp = &Modes[Nmodes];
 
     // Parse line (C is pretty weak on text processing...)
-    char *name,*demod;
+
     char *stringp = line;
 
+    char *mode_name;
     do {
-      name = strsep(&stringp," \t");
-    } while (name != NULL && *name == '\0');
+      mode_name = strsep(&stringp," \t");
+    } while (mode_name != NULL && *mode_name == '\0');
     
+    char *demod_name;
     do {
-      demod = strsep(&stringp," \t");
-    } while (demod != NULL && *demod == '\0');
+      demod_name = strsep(&stringp," \t");
+    } while (demod_name != NULL && *demod_name == '\0');
     
-    if(name == NULL || demod == NULL)
+    if(mode_name == NULL || demod_name == NULL)
       continue;
     
-    int i;
-    for(i=0;i<NDEMOD;i++)
-      if(strncasecmp(demod,Demodtab[i].name,strlen(Demodtab[i].name)) == 0)
+    struct demodtab *dtp;
+    for(dtp = &Demodtab[0]; dtp < &Demodtab[Ndemod]; dtp++){
+      if(strncasecmp(demod_name,dtp->name,strlen(dtp->name)) == 0)
 	break;
-      
-    if(i == NDEMOD)
+    }
+    if(dtp == &Demodtab[Ndemod])
       continue; // Demod not found in list
 
-    strlcpy(mp->name, name, sizeof(mp->name));
-    strlcpy(mp->demod_name, Demodtab[i].name, sizeof(mp->demod_name));
-    mp->demod = Demodtab[i].demod;
+    mtp->demod_type = dtp - &Demodtab[0];
+    strlcpy(mtp->name, mode_name, sizeof(mtp->name));
 
     double low,high;
     low = strtod(stringp,&stringp);
     high = strtod(stringp,&stringp);
     if(high < low){ // Ensure high > low
-      mp->low = high;
-      mp->high = low;
+      mtp->low = high;
+      mtp->high = low;
     } else {
-      mp->low = low;
-      mp->high = high;
+      mtp->low = low;
+      mtp->high = high;
     }
-    mp->shift = strtod(stringp,&stringp);
-    mp->attack_rate = -fabs(strtod(stringp,&stringp));
-    mp->recovery_rate = fabs(strtod(stringp,&stringp));
-    mp->hangtime = fabs(strtod(stringp,&stringp)); // Must be positive
+    mtp->shift = strtod(stringp,&stringp);
+    mtp->attack_rate = -fabs(strtod(stringp,&stringp));
+    mtp->recovery_rate = fabs(strtod(stringp,&stringp));
+    mtp->hangtime = fabs(strtod(stringp,&stringp)); // Must be positive
+    mtp->channels = 2;
 
     // Process options
-    mp->flags = 0;
+    mtp->channels = 2;
     for(int i=0;i<8;i++){
       char *option;
       // Skip leading space
@@ -109,19 +103,17 @@ int readmodes(char *file){
 	break; // No more
 
       if(strcasecmp(option,"isb") == 0 || strcasecmp(option,"conj") == 0){
-	mp->flags |= ISB;         // For independent sideband: LSB on left, USB on right
+	mtp->isb = 1;         // For independent sideband: LSB on left, USB on right
       } else if(strcasecmp(option,"flat") == 0){
-	mp->flags |= FLAT;         // FM only
-      } else if(strcasecmp(option,"cal") == 0){
-	mp->flags |= CAL|PLL; // Calibrate implies PLL
+	mtp->flat = 1;         // FM only
       } else if(strcasecmp(option,"square") == 0){
-	mp->flags |= SQUARE|PLL; // Square implies PLL
+	mtp->square = mtp->pll = 1; // Square implies PLL
       } else if(strcasecmp(option,"coherent") == 0 || strcasecmp(option,"pll") == 0){
-	mp->flags |= PLL;
-      } else if(strcasecmp(option,"envelope") == 0){
-	mp->flags |= ENVELOPE | MONO; // Envelope detected AM implies mono
+	mtp->pll = 1;
       } else if(strcasecmp(option,"mono") == 0){
-	mp->flags |= MONO;  // E.g., if you don't want the hilbert transform of SSB on the right channel
+	mtp->channels = 1;  // E.g., if you don't want the hilbert transform of SSB on the right channel
+      } else if(strcasecmp(option,"stereo") == 0){
+	mtp->channels = 2; // actually the default
       }
     }    
     Nmodes++;

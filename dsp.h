@@ -1,4 +1,4 @@
-// $Id: dsp.h,v 1.18 2018/07/06 06:10:44 karn Exp $
+// $Id: dsp.h,v 1.19 2018/12/05 09:07:18 karn Exp $
 // Low-level, ostly math functions useful for digital signal processing
 #ifndef _DSP_H
 #define _DSP_H 1
@@ -18,7 +18,9 @@ inline float const fast_cargf(complex float x){
 }
 
 complex float const csincosf(const float x);
+complex float const csincospif(const float x);
 complex double const csincos(const double x);
+complex double const csincospi(const double x);
 
 float const rpower(const float *data,const int len);
 float const cpower(const complex float *data, const int len);
@@ -38,11 +40,14 @@ double const parse_frequency(const char *);
 #define DEGPRA (180./M_PI)
 #define RAPDEG (M_PI/180.)
 
-// I *hate* this sort of pointless, stupid, gratuitous incompatibility that
-// makes a lot of code impossible to read and debug
-#ifdef __APPLE__
-#define sincos(x,s,c) {*s = sin(x); *c = cos(x);}
+#if __APPLE__
+#define sincos(x,s,c) __sincos(x,s,c)
+#define sincosf(x,s,c) __sincosf(x,s,c)
+#define sincospi(x,s,c) __sincospi(x,s,c)
+#define sincospif(x,s,c) __sincospif(x,s,c)
+#else
+#define sincospi(x,s,c) sincos(x*M_PI,s,c)
+#define sincospif(x,s,c) sincosf(x*M_PI,s,c)
 #endif
-
 
 #endif

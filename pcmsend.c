@@ -1,4 +1,4 @@
-// $Id: pcmsend.c,v 1.9 2018/09/08 06:06:21 karn Exp $
+// $Id: pcmsend.c,v 1.10 2018/12/02 09:16:45 karn Exp $
 // Multicast local audio source with PCM
 // Copyright April 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -183,7 +183,7 @@ int main(int argc,char * const argv[]){
 
 
   // Set up multicast transmit socket
-  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
+  Output_fd = setup_mcast(Mcast_output_address_text,NULL,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);

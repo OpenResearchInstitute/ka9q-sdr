@@ -1,4 +1,4 @@
-// $Id: monitor.c,v 1.84 2018/11/11 21:50:43 karn Exp karn $
+// $Id: monitor.c,v 1.87 2018/12/02 09:16:45 karn Exp $
 // Listen to multicast group(s), send audio to local sound device via portaudio
 // Copyright 2018 Phil Karn, KA9Q
 #define _GNU_SOURCE 1
@@ -54,6 +54,12 @@ struct session {
   uint32_t ssrc;            // RTP Sending Source ID
   int type;                 // RTP type (10,11,20,111)
 
+  uint32_t start_timestamp;
+  long long start_rptr;
+  long long timestamp_upper; // Upper bits of virtual timestamp (if greater than 2^32)
+  long long wptr;
+  int playout;
+
   OpusDecoder *opus;        // Opus codec decoder handle, if needed
   int opus_bandwidth;       // Opus stream audio bandwidth
   int channels;             // Channels (1 or 2)
@@ -63,30 +69,33 @@ struct session {
 
   unsigned long packets;    // RTP packets for this session
   unsigned long empties;    // RTP but no data
-
-  long long wptr;           // Unwrapped write pointer, not wrapped (will wrap in 6 million years!)
+  unsigned long long late;
 
   int terminate;            // Set to cause thread to terminate voluntarily
+  int muted;
+  int reset;
 };
 
 
 // Global config variables
 #define SAMPRATE 48000        // Too hard to handle other sample rates right now
+#define SAMPPCALLBACK (SAMPRATE/50)     // 20 ms @ 48 kHz
+#define PLAYOUT (SAMPRATE/10) // Nominal playout buffer delay - 100 ms
 #define MAX_MCAST 20          // Maximum number of multicast addresses
 
-#define SAMPPCALLBACK (SAMPRATE/50)     // 20 ms @ 48 kHz
 #define BUFFERSIZE (1<<19)    // about 10.92 sec at 48 kHz stereo - must be power of 2!!
+
 float const SCALE = 1./SHRT_MAX;
 
 // Command line parameters
 int Update_interval = 100;    // Default time in ms between display updates
-char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
 int List_audio;               // List audio output devices and exit
 int Verbose;                  // Verbosity flag (currently unused)
 int Quiet;                    // Disable curses
 int Mcast_ttl = 0;            // We don't transmit
 
 // Global variables
+char *Mcast_address_text[MAX_MCAST]; // Multicast address(es) we're listening to
 char Audiodev[256];           // Name of audio device; empty means portaudio's default
 int Nfds;                     // Number of streams
 struct session *Session;      // Link to head of session structure chain
@@ -99,7 +108,7 @@ PaTime Start_pa_time;
 struct session *Current;
 pthread_t Display_task;
 float Output_buffer[BUFFERSIZE][2]; // Decoded audio output, written by processing thread and read by PA callback
-long long Rptr;                // Unwrapped read pointer (will overflow in 6 million years)
+volatile long long Rptr;                // Unwrapped read pointer (will overflow in 6 million years)
 
 void cleanup(void);
 void closedown(int);
@@ -264,7 +273,7 @@ void *sockproc(void *arg){
   char *mcast_address_text = (char *)arg;
 
   // Set up multicast input
-  int input_fd = setup_mcast(mcast_address_text,0,Mcast_ttl,0);
+  int input_fd = setup_mcast(mcast_address_text,NULL,0,Mcast_ttl,0);
   if(input_fd == -1){
     fprintf(stderr,"Can't set up input %s\n",mcast_address_text);
     pthread_exit(NULL);
@@ -316,6 +325,8 @@ void *sockproc(void *arg){
 	continue;
       }
       sp->dest = mcast_address_text;
+      sp->start_rptr = Rptr;
+      sp->reset = 1;
       
       pthread_mutex_init(&sp->qmutex,NULL);
       pthread_cond_init(&sp->qcond,NULL);
@@ -392,7 +403,7 @@ void decode_task_cleanup(void *arg){
   }
 }
 
-// Thread to decode incoming RTP packets for each stream
+// Thread to decode incoming RTP packets for each session
 void *decode_task(void *arg){
   struct session *sp = (struct session *)arg;
   assert(sp);
@@ -402,7 +413,6 @@ void *decode_task(void *arg){
 
   sp->gain = 1;    // 0 dB by default
   sp->pan = 0;     // center by default
-  sp->wptr = Rptr;
 
   // Main loop; run until asked to quit
   while(!sp->terminate){
@@ -420,56 +430,50 @@ void *decode_task(void *arg){
     sp->type = pkt->rtp.type;
     sp->packets++; // Count all packets, regardless of type
       
-    int samples_skipped = rtp_process(&sp->rtp_state,&pkt->rtp,0); // get rid of last arg
-    if(samples_skipped < 0)
-      goto done; // old dupe? What if it's simply out of sequence?
-
     // Compute gains and delays for stereo imaging
     // -6dB for each channel in the center
     // when full to one side or the other, that channel is +6 dB and the other is -inf dB
-    float left_gain = sp->gain * (1 - sp->pan)/2;
-    float right_gain = sp->gain * (1 + sp->pan)/2;
-    int left_delay = 0;
-    int right_delay = 0;
-    // Also delay less favored channel 1 ms max
-    // This is really what drives source localization in humans
-    if(sp->pan > 0)
-      left_delay = round(sp->pan * .001 * SAMPRATE); // Delay left channel
-    else if(sp->pan < 0)
-      right_delay = round(-sp->pan * .001 * SAMPRATE); // Delay right channel
+    float left_gain = 0,right_gain = 0;
+    int left_delay = 0,right_delay = 0;
 
-    assert(left_delay >= 0 && right_delay >= 0);
+    if(!sp->muted){
+      left_gain = sp->gain * (1 - sp->pan)/2;
+      right_gain = sp->gain * (1 + sp->pan)/2;
+      // Also delay less favored channel 1 ms max
+      // This is really what drives source localization in humans
+      if(sp->pan > 0)
+	left_delay = round(sp->pan * .001 * SAMPRATE); // Delay left channel
+      else if(sp->pan < 0)
+	right_delay = round(-sp->pan * .001 * SAMPRATE); // Delay right channel
 
-    if(samples_skipped > 0){
-      // gap in PCM data
-      if(pkt->rtp.marker || samples_skipped >= 3840){
-	if(sp->opus)
-	  opus_decoder_ctl(sp->opus,OPUS_RESET_STATE); // Reset decoder and catch up
-      } else {
-	// Short gap
- 	if(sp->opus && sp->wptr >= Rptr){ // Don't do this if it's already too late
-	  // Decode any FEC, otherwise interpolate or create comfort noise
-	  float bounce[samples_skipped][2]; // pick a better number
-	  int samples = opus_decode_float(sp->opus,pkt->data,pkt->len,&bounce[0][0],samples_skipped,1);
-	  assert(samples <= samples_skipped);
-	  int left = sp->wptr + left_delay;
-	  int right = sp->wptr + right_delay;
-	  for(int i=0; i<samples; i++){
-	    Output_buffer[left++ & (BUFFERSIZE-1)][0] += bounce[i][0] * left_gain;
-	    Output_buffer[right++ & (BUFFERSIZE-1)][1] += bounce[i][1] * right_gain;
-	  }
-	}
-      }
-      sp->wptr += samples_skipped;	  // Short loss; pad with implicit zeroes
+      assert(left_delay >= 0 && right_delay >= 0);
     }
 
-    // Catch up to any overrun by adding playout delay
-    if(sp->wptr < Rptr)
-      sp->wptr = Rptr;      // Underrun, catch up
+    if(pkt->rtp.marker || sp->reset){
+      if(sp->opus)
+	opus_decoder_ctl(sp->opus,OPUS_RESET_STATE); // Reset decoder
+      sp->reset = 0;
+      sp->start_rptr = Rptr;
+      sp->start_timestamp = pkt->rtp.timestamp; // Resynch as if new stream
+      sp->timestamp_upper = 0;
+      sp->playout = PLAYOUT;
+      sp->reset = 0;
+    }
+    // Find where to write in circular output buffer
+    // Handle wraparound in timestamp (unlikely but possible in long-lived stream)
+    // This can still fail if there's an outage more than 2^31 samples long without a mark (seems unlikely)
+    while(sp->timestamp_upper + pkt->rtp.timestamp - sp->start_timestamp < 0)
+      sp->timestamp_upper += (1LL << 32);
 
-    // Decode frame, add into output buffer
-    int left = sp->wptr + left_delay;
-    int right = sp->wptr + right_delay;
+    sp->wptr = sp->start_rptr + sp->timestamp_upper + pkt->rtp.timestamp - sp->start_timestamp + sp->playout;
+    if(sp->wptr < Rptr){
+      sp->late++;
+      sp->playout += SAMPRATE/1000; // 1 ms
+      goto drop;
+    }
+
+    unsigned int left = sp->wptr + left_delay;
+    unsigned int right = sp->wptr + right_delay;
     signed short *data_ints = (signed short *)&pkt->data[0];	
 
     switch(pkt->rtp.type){
@@ -516,9 +520,7 @@ void *decode_task(void *arg){
       sp->frame_size = 0;
       break;
     }
-    sp->wptr += sp->frame_size;
-    sp->rtp_state.timestamp = pkt->rtp.timestamp + sp->frame_size;
-  done:;
+  drop:;
     free(pkt); pkt = NULL;
   }
   pthread_cleanup_pop(1);
@@ -547,7 +549,7 @@ void *display(void *arg){
 
     wmove(Mainscr,row,0);
 
-    mvwprintw(Mainscr,row++,0,"Type        ch BW Gain   Pan      SSRC     Queue Source/Dest");
+    mvwprintw(Mainscr,row++,0,"Type        ch BW Gain   Pan      SSRC     Queue  Source/Dest");
     for(struct session *sp = Session; sp; sp = sp->next){
       int bw = 0; // Audio bandwidth (not bitrate) in kHz
       char *type,typebuf[30];
@@ -603,12 +605,12 @@ void *display(void *arg){
       }      
       char temp[strlen(sp->src_addr)+strlen(sp->src_port)+strlen(sp->dest) + 20]; // Allow some room
       snprintf(temp,sizeof(temp),"%s:%s -> %s",sp->src_addr,sp->src_port,sp->dest);
-      double queue =  (double)(sp->wptr - Rptr)/SAMPRATE;
-      mvwprintw(Mainscr,row,0,"%-12s%2d%3d%+5.0lf%+6.2lf%10x%10.2lf %s",
+      double queue = (sp->wptr - Rptr) /(double)SAMPRATE;
+      mvwprintw(Mainscr,row,0,"%-12s%2d%3d%+5.0lf%+6.2lf%10x%10.3lf %s",
 		type,
 		sp->channels,
 		bw,
-		20*log10(sp->gain),
+		sp->muted ? -INFINITY : 20*log10(sp->gain),
 		sp->pan,
 		sp->ssrc,
 		queue,
@@ -619,6 +621,8 @@ void *display(void *arg){
 	wprintw(Mainscr," dupes %'lu",sp->rtp_state.dupes);
       if(sp->rtp_state.drops)
 	wprintw(Mainscr," drops %'lu",sp->rtp_state.drops);
+      if(sp->late)
+	wprintw(Mainscr," lates %'lu",sp->late);
       
       if(queue >= 0)
 	mvwchgat(Mainscr,row,40,5,A_BOLD,0,NULL);
@@ -628,9 +632,11 @@ void *display(void *arg){
       row++;
     }
     row++;
-    mvwprintw(Mainscr,row++,0,"\u21e5 select next stream");
-    mvwprintw(Mainscr,row++,0,"d delete stream");
+    mvwprintw(Mainscr,row++,0,"\u21e5 select next session");
+    mvwprintw(Mainscr,row++,0,"d delete session");
     mvwprintw(Mainscr,row++,0,"r reset playout buffer");
+    mvwprintw(Mainscr,row++,0,"m mute session");
+    mvwprintw(Mainscr,row++,0,"u unmute session");
     mvwprintw(Mainscr,row++,0,"\u2191 volume +1 dB");
     mvwprintw(Mainscr,row++,0,"\u2193 volume -1 dB");
     mvwprintw(Mainscr,row++,0,"\u2192 stereo position right");
@@ -685,11 +691,20 @@ void *display(void *arg){
     case KEY_RIGHT:
       Current->pan = min(Current->pan + .01,+1.0);
       break;
+    case 'm': // Mute current session
+      if(Current)
+	Current->muted = 1;
+
+      break;
+    case 'u': // Unmute current session
+      if(Current)
+	Current->muted = 0;
+      // NOTE FALL THRU
     case 'r':
       // Reset playout queue
-      Current->wptr = Rptr;
-      // Reset RTP state & counters
-      Current->rtp_state.init = 0;
+      if(Current)
+	Current->reset = 1;
+
       break;
     break;
     case 'd':

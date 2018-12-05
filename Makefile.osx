@@ -1,9 +1,9 @@
-# $Id: Makefile.osx,v 1.54 2018/09/05 08:19:38 karn Exp $
+# $Id: Makefile.osx,v 1.58 2018/12/05 07:09:24 karn Exp $
 CFLAGS=-g -O3 -std=gnu11 -pthread -Wall -funsafe-math-optimizations `pkg-config --cflags fftw3`
 BINDIR=/usr/local/bin
 LIBDIR=/usr/local/share/ka9q-radio
 LD_FLAGS=-lpthread -lm
-EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend pcmcat radio 
+EXECS=aprs aprsfeed funcube hackrf iqplay iqrecord modulate monitor opus opussend packet pcmsend pcmcat radio control
 AFILES=bandplan.txt help.txt modes.txt
 
 all: $(EXECS) $(AFILES)
@@ -19,6 +19,9 @@ clean:
 	rcsclean
 
 # Executables
+control: control.o modes.o misc.o multicast.o bandplan.o status.o
+	$(CC) -g -o $@ $^ -lncurses -lm -lpthread -lm
+
 aprs: aprs.o ax25.o libradio.a
 	$(CC) -g -o $@ $^ -lm
 
@@ -58,7 +61,7 @@ pcmcat: pcmcat.o libradio.a
 pcmsend: pcmsend.o libradio.a
 	$(CC) -g -o $@ $^ -lportaudio -lm -lpthread
 
-radio: main.o am.o audio.o bandplan.o display.o doppler.o fm.o linear.o modes.o radio.o libradio.a
+radio: main.o am.o audio.o bandplan.o display.o doppler.o fm.o linear.o modes.o radio.o radio_status.o libradio.a
 	$(CC) -g -o $@ $^ -lfftw3f_threads -lfftw3f -lncurses -lm -lpthread
 
 # Binary libraries
@@ -66,23 +69,24 @@ libfcd.a: fcd.o hid-libusb.o
 	ar rv $@ $?
 	ranlib $@
 
-libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o rtcp.o
+libradio.a: attr.o ax25.o decimate.o dsp.o filter.o misc.o multicast.o rtcp.o status.o osc.o
 	ar rv $@ $?
 	ranlib $@
 
 # Main programs
 aprs.o: aprs.c ax25.h multicast.h misc.h dsp.h
 aprsfeed.o: aprsfeed.c ax25.h multicast.h misc.h
-funcube.o: funcube.c fcd.h fcdhidcmd.h hidapi.h sdr.h radio.h misc.h multicast.h
-iqplay.o: iqplay.c misc.h radio.h sdr.h multicast.h attr.h
-iqrecord.o: iqrecord.c radio.h sdr.h multicast.h attr.h
-modulate.o: modulate.c misc.h filter.h radio.h sdr.h
+funcube.o: funcube.c fcd.h fcdhidcmd.h hidapi.h sdr.h radio.h osc.h misc.h multicast.h
+iqplay.o: iqplay.c misc.h radio.h osc.h sdr.h multicast.h attr.h
+iqrecord.o: iqrecord.c radio.h osc.h sdr.h multicast.h attr.h
+modulate.o: modulate.c misc.h filter.h radio.h osc.h sdr.h
 monitor.o: monitor.c misc.h multicast.h
 opus.o: opus.c misc.h multicast.h
 opussend.o: opussend.c misc.h multicast.h
-packet.o: packet.c filter.h misc.h multicast.h ax25.h dsp.h
+packet.o: packet.c filter.h misc.h multicast.h ax25.h dsp.h osc.h
 pcmcat.o: pcmcat.c multicast.h
 pcmsend.o: pcmsend.c misc.h multicast.h
+control.o: control.c radio.h osc.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h
 
 # Components of libfcd.a
 fcd.o: fcd.c fcd.h hidapi.h fcdhidcmd.h
@@ -98,18 +102,24 @@ knob.o: knob.c misc.h
 misc.o: misc.c misc.h 
 multicast.o: multicast.c multicast.h misc.h
 rtcp.o: rtcp.c multicast.h
+status.o: status.c status.h
 touch.o: touch.c misc.h
+osc.o: osc.c  osc.h
+
 
 # Components of radio
-am.o: am.c misc.h filter.h radio.h  sdr.h
+am.o: am.c misc.h filter.h radio.h osc.h sdr.h
 audio.o: audio.c misc.h  multicast.h
 bandplan.o: bandplan.c bandplan.h
-display.o: display.c radio.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h
-doppler.o: doppler.c radio.h sdr.h misc.h
-fm.o: fm.c misc.h filter.h radio.h sdr.h 
-hackrf.o: hackrf.c sdr.h radio.h misc.h multicast.h decimate.h
-linear.o: linear.c misc.h filter.h radio.h sdr.h 
-main.o: main.c radio.h sdr.h filter.h misc.h  multicast.h dsp.h
-misc.o: misc.c radio.h sdr.h
-modes.o: modes.c radio.h sdr.h misc.h
-radio.o: radio.c radio.h sdr.h filter.h misc.h
+display.o: display.c radio.h osc.h sdr.h  misc.h filter.h bandplan.h multicast.h dsp.h
+doppler.o: doppler.c radio.h osc.h sdr.h misc.h
+fm.o: fm.c misc.h filter.h radio.h osc.h sdr.h 
+hackrf.o: hackrf.c sdr.h radio.h osc.h misc.h multicast.h decimate.h
+linear.o: linear.c misc.h filter.h radio.h osc.h sdr.h 
+main.o: main.c radio.h osc.h sdr.h filter.h misc.h  multicast.h dsp.h
+misc.o: misc.c radio.h osc.h sdr.h
+modes.o: modes.c radio.h sdr.h osc.h misc.h
+radio_status.o: radio_status.c status.h radio.h misc.h dsp.h filter.h multicast.h
+radio.o: radio.c radio.h sdr.h osc.h filter.h misc.h
+
+

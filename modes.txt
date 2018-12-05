@@ -14,7 +14,6 @@
 
 # flags:
 #    flat - bypass de-emphasis and PL tone removal (FM only)
-#    envelope - use noncoherent envelope detection (linear only)
 #    conj - cross-combine the complex conjugates of the upper and lower sidebands - for ISB (independent sideband) (linear only)
 #    mono - send only I channel as mono; otherwise stereo with I on left and Q on right (linear only, others are inherently mono)
 #    pll - Acquire and coherently track carrier; without "square", uses conventional PLL (linear only)

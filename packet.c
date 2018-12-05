@@ -1,4 +1,4 @@
-// $Id: packet.c,v 1.23 2018/09/08 06:06:21 karn Exp $
+// $Id: packet.c,v 1.25 2018/12/02 09:16:45 karn Exp $
 // AFSK/FM packet demodulator
 // Reads RTP PCM audio stream, emits decoded frames in multicast RTP
 // Copyright 2018, Phil Karn, KA9Q
@@ -15,20 +15,17 @@
 #include <netdb.h>
 
 #include "dsp.h"
+#include "osc.h"
 #include "filter.h"
 #include "misc.h"
 #include "multicast.h"
 #include "ax25.h"
 
-
-
 // Needs to be redone with common RTP receiver module
 struct session {
   struct session *next; 
   
-  struct sockaddr sender;
-  char addr[NI_MAXHOST];    // RTP Sender IP address
-  char port[NI_MAXSERV];    // RTP Sender source port
+  struct sockcache source;
 
   struct rtp_state rtp_state_in;
   struct rtp_state rtp_state_out;
@@ -66,8 +63,8 @@ struct session *Session;
 extern float Kaiser_beta;
 pthread_mutex_t Output_mutex;
 
-struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc);
-struct session *make_session(struct sockaddr const *sender,uint32_t ssrc);
+struct session *lookup_session(const uint32_t ssrc);
+struct session *make_session(uint32_t ssrc);
 int close_session(struct session *sp);
 
 void *decode_task(void *arg);
@@ -117,7 +114,7 @@ int main(int argc,char *argv[]){
   int input_fd[Nfds];    // Multicast receive sockets
 
   for(int i=0;i<Nfds;i++){
-    input_fd[i] = setup_mcast(Mcast_address_text[i],0,0,0);
+    input_fd[i] = setup_mcast(Mcast_address_text[i],NULL,0,0,0);
     if(input_fd[i] == -1){
       fprintf(stderr,"Can't set up input %s\n",Mcast_address_text[i]);
       continue;
@@ -126,7 +123,7 @@ int main(int argc,char *argv[]){
       max_fd = input_fd[i];
     FD_SET(input_fd[i],&fdset_template);
   }
-  Output_fd = setup_mcast(Decode_mcast_address_text,1,Mcast_ttl,0);
+  Output_fd = setup_mcast(Decode_mcast_address_text,NULL,1,Mcast_ttl,0);
   if(Output_fd == -10){
     fprintf(stderr,"Can't set up output to %s\n",
 	    Decode_mcast_address_text);
@@ -179,22 +176,21 @@ int main(int argc,char *argv[]){
       if(rtp_hdr.type != PCM_MONO_PT)
 	continue; // Only mono PCM for now
       
-      struct session *sp = lookup_session(&sender,rtp_hdr.ssrc);
+      struct session *sp = lookup_session(rtp_hdr.ssrc);
       if(sp == NULL){
 	// Not found
-	if((sp = make_session(&sender,rtp_hdr.ssrc)) == NULL){
+	if((sp = make_session(rtp_hdr.ssrc)) == NULL){
 	  fprintf(stdout,"No room for new session!!\n");
 	  fflush(stdout);
 	  continue;
 	}
 	sp->rtp_state_out.ssrc = sp->rtp_state_in.ssrc = rtp_hdr.ssrc;
-	getnameinfo((struct sockaddr *)&sender,sizeof(sender),sp->addr,sizeof(sp->addr),
-		    sp->port,sizeof(sp->port),NI_NOFQDN|NI_DGRAM);
+	update_sockcache(&sp->source,&sender);
 	sp->input_pointer = 0;
 	sp->filter_in = create_filter_input(AL,AM,REAL);
 	pthread_create(&sp->decode_thread,NULL,decode_task,sp); // One decode thread per stream
 	if(Verbose){
-	  fprintf(stdout,"New session from %s, ssrc %x\n",sp->addr,sp->rtp_state_in.ssrc);
+	  fprintf(stdout,"New session from %s:%s, ssrc %x\n",sp->source.host,sp->source.port,sp->rtp_state_in.ssrc);
 	  fflush(stdout);
 	}
       }
@@ -223,25 +219,22 @@ int main(int argc,char *argv[]){
 
 
 // Find existing session in table, if it exists
-struct session *lookup_session(const struct sockaddr *sender,const uint32_t ssrc){
+struct session *lookup_session(const uint32_t ssrc){
   struct session *sp;
   for(sp = Session; sp != NULL; sp = sp->next){
-    if(sp->rtp_state_in.ssrc == ssrc && memcmp(&sp->sender,sender,sizeof(*sender)) == 0){
+    if(sp->rtp_state_in.ssrc == ssrc)
       // Found it
       return sp;
-    }
   }
   return NULL;
 }
 // Create a new session, partly initialize
-struct session *make_session(struct sockaddr const *sender,uint32_t ssrc){
+struct session *make_session(uint32_t ssrc){
   struct session *sp;
 
   if((sp = calloc(1,sizeof(*sp))) == NULL)
     return NULL; // Shouldn't happen on modern machines!
   
-  // Initialize entry
-  memcpy(&sp->sender,sender,sizeof(struct sockaddr));
   sp->rtp_state_in.ssrc = ssrc;
 
   // Put at head of bucket chain
@@ -277,14 +270,19 @@ void *decode_task(void *arg){
   assert(sp != NULL);
 
   struct filter_out *filter = create_filter_output(sp->filter_in,NULL,1,COMPLEX);
-  set_filter(filter,Samprate,+100,+4000,3.0); // Creates analytic, band-limited signal
+  set_filter(filter,+100./Samprate,+4000./Samprate,3.0); // Creates analytic, band-limited signal
 
   // Tone replica generators (-1200 and -2200 Hz)
-  float complex mark_phase = 1;
-  float complex mark_step = csincosf(-2*M_PI*1200./Samprate);
-  float complex space_phase = 1;
-  float complex space_step = csincosf(-2*M_PI*2200./Samprate);
-
+  struct osc mark;
+  memset(&mark,0,sizeof(mark));
+  pthread_mutex_init(&mark.mutex,NULL);
+  set_osc(&mark,-1200./Samprate, 0.0);
+  
+  struct osc space;
+  memset(&space,0,sizeof(space));
+  pthread_mutex_init(&space.mutex,NULL);
+  set_osc(&space,-2200./Samprate, 0.0);  
+    
   // Tone integrators
   int symphase = 0;
   float complex mark_accum = 0; // On-time
@@ -309,13 +307,11 @@ void *decode_task(void *arg){
       // Spin down by 1200 and 2200 Hz, accumulate each in boxcar (comb) filters
       // Mark and space each have in-phase and offset integrators for timing recovery
       float complex s;
-      s = mark_phase * filter->output.c[n];
-      mark_phase *= mark_step;
+      s = filter->output.c[n] * step_osc(&mark);
       mark_accum += s;
       mark_offset_accum += s;
 
-      s = space_phase * filter->output.c[n];
-      space_phase *= space_step;
+      s = filter->output.c[n] * step_osc(&space);
       space_accum += s;
       space_offset_accum += s;
 
@@ -411,9 +407,6 @@ void *decode_task(void *arg){
       }
       last_val = cur_val;
     }
-    // Renormalize tone oscillators -- important when floats are used
-    mark_phase /= cnrmf(mark_phase);
-    space_phase /= cnrmf(space_phase);    
   }
 
   return NULL;

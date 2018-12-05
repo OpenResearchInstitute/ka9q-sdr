@@ -1,4 +1,4 @@
-// $Id: dsp.c,v 1.1 2018/07/06 06:10:44 karn Exp $
+// $Id: dsp.c,v 1.2 2018/12/05 09:07:18 karn Exp $
 // low-level subroutines useful in digital signal processing - mainly math related
 // Copyright 2018, Phil Karn, KA9Q
 
@@ -16,13 +16,14 @@
 complex float const csincosf(const float x){
   float s,c;
 
-#if __APPLE__ // No sincos
-  s = sinf(x);
-  c = cosf(x);
-#else
   sincosf(x,&s,&c);
-#endif
   return CMPLXF(c,s);
+}
+complex float const csincospif(const float x){
+  float s,c;
+  sincospif(x,&s,&c);
+  return CMPLXF(c,s);
+
 }
 
 // return unit magnitude complex number with given phase x
@@ -32,6 +33,13 @@ complex double const csincos(const double x){
   sincos(x,&s,&c);
   return CMPLX(c,s);
 }
+complex double const csincospi(const double x){
+  double s,c;
+  sincospi(x,&s,&c);
+  return CMPLX(c,s);
+}
+
+
 
 // Complex norm (sum of squares of real and imaginary parts)
 float const cnrmf(const complex float x){

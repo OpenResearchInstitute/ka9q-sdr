@@ -1,4 +1,4 @@
-// $Id: iqrecord.c,v 1.21 2018/09/08 06:06:21 karn Exp $
+// $Id: iqrecord.c,v 1.22 2018/12/02 09:16:45 karn Exp $
 // Read and record complex I/Q stream or PCM baseband audio
 // This version reverts to file I/O from an unsuccessful experiment to use mmap()
 // Copyright 2018 Phil Karn, KA9Q
@@ -118,7 +118,7 @@ int main(int argc,char *argv[]){
   setlocale(LC_ALL,locale);
 
   // Set up input socket for multicast data stream from front end
-  Input_fd = setup_mcast(IQ_mcast_address_text,0,Mcast_ttl,0);
+  Input_fd = setup_mcast(IQ_mcast_address_text,NULL,0,Mcast_ttl,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up I/Q input\n");
     exit(1);
