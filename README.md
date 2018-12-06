@@ -10,6 +10,17 @@ communication programs. It can also smoothly track satellite Doppler
 shift in an open-loop mode when fed velocity and acceleration
 information from an external program.
 
+The upstream repository for this code base used to be on github, but this
+repo now longer exists. The upstream code is now hosted on ka9q's personal 
+site:
+
+http://www.ka9q.net/ka9q-radio.tar.xz
+
+http://www.ka9q.net/wwv.tar.xz
+
+phase4ground will [strive to provide and document an automatic update 
+mechanism](https://github.com/phase4ground/ka9q-sdr/issues/7). 
+
 The ka9q-radio modules execute from the command line on either Linux
 or OSX.  As yet there is no fancy graphical user interface. (This may
 come later, especially if someone volunteers to create one).
