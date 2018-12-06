@@ -1,4 +1,4 @@
-// $Id: decimate.c,v 1.6 2018/07/08 10:06:34 karn Exp $
+// $Id: decimate.c,v 1.8 2018/12/03 11:43:00 karn Exp $
 // half-band filters for sample rate decimation by powers of 2
 // Note: filters have unity middle tap, which usually results in overall gain of +6 dB
 // Copyright July 2018, Phil Karn, KA9Q

@@ -1,4 +1,4 @@
-// $Id: modulate.c,v 1.13 2018/08/29 01:34:15 karn Exp $
+// $Id: modulate.c,v 1.14 2018/12/05 09:07:18 karn Exp $
 // Simple I/Q AM modulator - will eventually support other modes
 // Copyright 2017, Phil Karn, KA9Q
 #include <assert.h>
@@ -101,13 +101,13 @@ int main(int argc,char *argv[]){
     fprintf(stderr,"Warning: low carrier frequency may interfere with receiver DC suppression\n");
   }
 
-  frequency *= 2*M_PI/Samprate;       // radians/sample
+  frequency *= 1./Samprate;       // cycles/sample
   amplitude = pow(10.,amplitude/20.); // Convert to amplitude ratio
-  sweep *= 2*M_PI / ((double)Samprate*Samprate);  // radians/sample
+  sweep *= 1. / ((double)Samprate*Samprate);  // cycles/sample
 
-  complex double phase_accel = csincos(sweep);
-  complex double phase_step = csincos(frequency);
-  complex double phase = 1;  
+  struct osc osc;
+  memset(&osc,0,sizeof(osc));
+  set_osc(&osc,frequency,sweep);
   int const L = BLOCKSIZE;
   int const M = BLOCKSIZE + 1;
   int const N = L + M - 1;
@@ -154,12 +154,8 @@ int main(int argc,char *argv[]){
     }
     // Spin up to chosen carrier frequency
     for(int i=0;i<L;i++){
-      filter_out->output.c[i] *= phase * amplitude;
-      phase *= phase_step;
-      phase_step *= phase_accel;
+      filter_out->output.c[i] *= step_osc(&osc) * amplitude;
     }
-    phase /= cabs(phase);
-    phase_step /= cabs(phase_step);
     int16_t output[2*L];
     for(int i=0;i<L;i++){
       output[2*i] = crealf(filter_out->output.c[i]) * SHRT_MAX;

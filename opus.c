@@ -1,4 +1,4 @@
-// $Id: opus.c,v 1.25 2018/09/08 06:06:21 karn Exp $
+// $Id: opus.c,v 1.27 2018/12/02 09:16:45 karn Exp $
 // Opus compression relay
 // Read PCM audio from one multicast group, compress with Opus and retransmit on another
 // Currently subject to memory leaks as old group states aren't yet aged out
@@ -141,12 +141,12 @@ int main(int argc,char * const argv[]){
     exit(1);
   }
 
-  Input_fd = setup_mcast(Mcast_input_address_text,0,0,0);
+  Input_fd = setup_mcast(Mcast_input_address_text,NULL,0,0,0);
   if(Input_fd == -1){
     fprintf(stderr,"Can't set up input on %s: %sn",Mcast_input_address_text,strerror(errno));
     exit(1);
   }
-  Output_fd = setup_mcast(Mcast_output_address_text,1,Mcast_ttl,0);
+  Output_fd = setup_mcast(Mcast_output_address_text,NULL,1,Mcast_ttl,0);
   if(Output_fd == -1){
     fprintf(stderr,"Can't set up output on %s: %s\n",Mcast_output_address_text,strerror(errno));
     exit(1);
@@ -245,6 +245,8 @@ int main(int argc,char * const argv[]){
     }
     sp->type = rtp_hdr.type;
     int samples_skipped = rtp_process(&sp->rtp_state_in,&rtp_hdr,frame_size);
+    if(samples_skipped < 0)
+      goto endloop; // Old dupe
     
     if(rtp_hdr.marker || samples_skipped > 4*Opus_frame_size){
       // reset encoder state after 4 frames of complete silence or a RTP marker bit

@@ -1,4 +1,4 @@
-// $Id: multicast.c,v 1.32 2018/09/08 06:06:21 karn Exp $
+// $Id: multicast.c,v 1.35 2018/12/02 09:16:45 karn Exp $
 // Multicast socket and RTP utility routines
 // Copyright 2018 Phil Karn, KA9Q
 
@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <string.h>
+#include <net/if.h>
 #if defined(linux)
 #include <bsd/string.h>
 #endif
@@ -47,41 +48,10 @@ static void soptions(int fd,int mcast_ttl){
 }
 
 // Join a socket to a multicast group
-#if defined(linux) // Linux, etc, for both IPv4/IPv6
-static int join_group(int fd,struct addrinfo *resp){
-  struct sockaddr_in *sin = (struct sockaddr_in *)resp->ai_addr;;
-  struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)resp->ai_addr;;
-
-  if(fd < 0)
-    return -1;
-
-  // Ensure it's a multicast address
-  // Is this check really necessary?
-  // Maybe the setsockopt would just fail cleanly if it's not
-  switch(sin->sin_family){
-  case PF_INET:
-    if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-      return -1;
-    break;
-  case PF_INET6:
-    if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
-      return -1;
-    break;
-  default:
-    return -1; // Unknown address family
-  }
-
-  struct group_req group_req;
-  group_req.gr_interface = 0; // Default interface - should this be a parameter?
-  memcpy(&group_req.gr_group,resp->ai_addr,resp->ai_addrlen);
-  if(setsockopt(fd,IPPROTO_IP,MCAST_JOIN_GROUP,&group_req,sizeof(group_req)) != 0){
-    perror("multicast join");
-    return -1;
-  }
-  return 0;
-}
-#else // old version, seems required on Apple    
-static int join_group(int fd,struct addrinfo *resp){
+#if __APPLE__
+// Workaround for joins on OSX (and BSD?) for default interface
+// join_group works on apple only when interface explicitly specified
+static int apple_join_group(int fd,struct addrinfo *resp){
   struct sockaddr_in *sin = (struct sockaddr_in *)resp->ai_addr;
   struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)resp->ai_addr;
   struct ip_mreq mreq;
@@ -104,7 +74,8 @@ static int join_group(int fd,struct addrinfo *resp){
     if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
       return -1;
     ipv6_mreq.ipv6mr_multiaddr = sin6->sin6_addr;
-    ipv6_mreq.ipv6mr_interface = 0; // Default interface - should this be a parameter?
+    ipv6_mreq.ipv6mr_interface = 0; // Default interface
+
     if(setsockopt(fd,IPPROTO_IP,IPV6_JOIN_GROUP,&ipv6_mreq,sizeof(ipv6_mreq)) != 0){
       perror("multicast v6 join");
       return -1;
@@ -117,6 +88,47 @@ static int join_group(int fd,struct addrinfo *resp){
 }
 #endif
 
+static int join_group(int fd,struct addrinfo *resp,char *iface){
+  struct sockaddr_in *sin = (struct sockaddr_in *)resp->ai_addr;
+  struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)resp->ai_addr;
+
+  if(fd < 0)
+    return -1;
+
+  // Ensure it's a multicast address
+  // Is this check really necessary?
+  // Maybe the setsockopt would just fail cleanly if it's not
+  switch(sin->sin_family){
+  case PF_INET:
+    if(!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
+      return -1;
+    break;
+  case PF_INET6:
+    if(!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
+      return -1;
+    break;
+  default:
+    return -1; // Unknown address family
+  }
+#if __APPLE__
+  if(!iface)
+    return apple_join_group(fd,resp); // Apple workaround for default interface
+#endif  
+
+  struct group_req group_req;
+  if(iface)
+    group_req.gr_interface = if_nametoindex(iface);
+  else
+    group_req.gr_interface = 0; // Default interface    
+
+  memcpy(&group_req.gr_group,resp->ai_addr,resp->ai_addrlen);
+  if(setsockopt(fd,IPPROTO_IP,MCAST_JOIN_GROUP,&group_req,sizeof(group_req)) != 0){
+    perror("multicast join");
+    return -1;
+  }
+  return 0;
+}
+
 // This is a bit messy. Is there a better way?
 char Default_mcast_port[] = "5004";
 char Default_rtcp_port[] = "5005";
@@ -128,11 +140,15 @@ char Default_rtcp_port[] = "5005";
 // when output = 0, bind to it so we'll accept incoming packets
 // Add parameter 'offset' (normally 0) to port number; this will be 1 when sending RTCP messages
 // (Can we just do both?)
-int setup_mcast(char const *target,int output,int ttl,int offset){
+int setup_mcast(char const *target,struct sockaddr *sock,int output,int ttl,int offset){
   int len = strlen(target) + 1;  // Including terminal null
-  char host[len],*port;
+  char host[len],*port,*iface;
 
   strlcpy(host,target,len);
+  if((iface = strrchr(host,',')) != NULL){
+    // Interface specified
+    *iface++ = '\0';
+  }
   if((port = strrchr(host,':')) != NULL){
     *port++ = '\0';
   } else {
@@ -147,15 +163,7 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
   hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV | (!output ? AI_PASSIVE : 0);
 
   struct addrinfo *results = NULL;
-  int ecode;
-  // Try a few times in case we come up before the resolver is quite ready (eg, on a systemd launch)
-  for(int tries=0; tries < 10; tries++){
-    //  fprintf(stderr,"Calling getaddrinfo(%s,%s)\n",host,port);
-    if((ecode = getaddrinfo(host,port,&hints,&results)) == 0)
-      break;
-    usleep(500000);
-  }    
-  //  fprintf(stderr,"getaddrinfo returns %d\n",ecode);
+  int ecode = getaddrinfo(host,port,&hints,&results);
   if(ecode != 0){
     fprintf(stderr,"setup_mcast getaddrinfo(%s,%s): %s\n",host,port,gai_strerror(ecode));
     return -1;
@@ -183,24 +191,20 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
 
     soptions(fd,ttl);
     if(output){
-      // Try up to 10 times
-      // this connect can fail with an unreachable when brought up quickly by systemd at boot
-      for(int tries=0; tries < 10; tries++){
-	if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	  goto done;
-	usleep(500000);
-      }
+      if((connect(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	goto success;
     } else { // input
-      for(int tries=0; tries < 10; tries++){
-	if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
-	  goto done;
-	usleep(500000);
-      }
+      if((bind(fd,resp->ai_addr,resp->ai_addrlen) == 0))
+	goto success;
     }
-    close(fd);
-    fd = -1;
   }
-  done:;
+  // All failed
+  fd = -1;
+  sock = NULL; // Don't save in case of error
+  success:;
+  if(sock)
+    memcpy(sock,resp->ai_addr,resp->ai_addrlen);
+
   // Strictly speaking, it is not necessary to join a multicast group to which we only send.
   // But this creates a problem with brain-dead Netgear (and probably other) "smart" switches
   // that do IGMP snooping. There's a setting to handle what happens with multicast groups
@@ -210,7 +214,7 @@ int setup_mcast(char const *target,int output,int ttl,int offset){
   // to our own multicasts.
 
   if(fd != -1)
-    join_group(fd,resp);
+    join_group(fd,resp,iface);
   else
     fprintf(stderr,"setup_input: Can't create multicast socket for %s:%s\n",host,port);
 
@@ -333,5 +337,29 @@ int rtp_process(struct rtp_state *state,struct rtp_header *rtp,int sampcnt){
 
   state->timestamp = rtp->timestamp + sampcnt;
   return time_step;
+}
+
+// For caching back conversions of binary socket structures to printable addresses
+void update_sockcache(struct sockcache *sc,struct sockaddr *sa){
+  int len;
+  switch(sa->sa_family){
+  case AF_INET:
+    len = sizeof(struct sockaddr_in);
+    break;
+  case AF_INET6:
+    len = sizeof(struct sockaddr_in6);
+    break;
+  default: // shouldn't happen
+    len = 0;
+    assert(0);
+    break;
+  }
+  if(memcmp(&sc->old_sockaddr,sa,len)){
+    memcpy(&sc->old_sockaddr,sa,len);
+    getnameinfo(sa,len,
+		sc->host,NI_MAXHOST,
+		sc->port,NI_MAXSERV,
+		NI_NOFQDN|NI_NUMERICHOST|NI_NUMERICSERV);
+  }
 }
 
