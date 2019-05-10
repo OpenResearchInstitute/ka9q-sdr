@@ -7,16 +7,17 @@ mainly because I have a MacBook Pro as my primary desktop.
 The ka9q-radio package has several package dependencies beyond those
 usually needed to compile C programs (e.g., make, gcc).
 
-On Raspbian, Debian or Ubuntu Linux, run the following command (as root):
+On Raspbian, Debian or Ubuntu Linux (>= 16.04 LTS), run the following command (as root):
 
-apt install libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev libasound2-dev libncurses5-dev libncursesw5-dev libattr1-dev portaudio19-dev libhackrf-dev
+```
+apt install libfftw3-dev libbsd-dev libopus-dev libusb-1.0-0-dev libasound2-dev \ 
+       libncurses5-dev libncursesw5-dev libattr1-dev portaudio19-dev libhackrf-dev
+```
+Please note that this will not work on Ubuntu 14.04 LTS, as its version of gcc is too old.
 
-Some versions of Ubuntu have an older version of libfftw3-dev that lacks full
+Some versions of Ubuntu (e.g. 16.04 LTS) have an older version of libfftw3-dev that lacks full
 thread safety. The symptom here is the missing link-time symbol
-
-       fftwf_make_planner_thread_safe()
-
-If necessary, you can install and build it from the upstream source at
+`fftwf_make_planner_thread_safe()`. If necessary, you can install and build it from the upstream source at
 
    http://www.fftw.org/fftw-3.3.7.tar.gz
 
